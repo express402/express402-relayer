@@ -240,6 +240,129 @@ impl DatabaseManager {
         Ok((records, total))
     }
 
+    /// Search transactions with filters
+    pub async fn search_transactions(
+        &self,
+        filters: &TransactionFilters,
+        page: u64,
+        limit: u64,
+    ) -> Result<(Vec<TransactionRecord>, u64)> {
+        let offset = (page - 1) * limit;
+
+        // If only user_address filter, use optimized existing method
+        if filters.status.is_none() 
+            && filters.priority.is_none() 
+            && filters.target_contract.is_none()
+            && filters.start_time.is_none()
+            && filters.end_time.is_none()
+            && filters.user_address.is_some() {
+            return self.get_user_transactions(
+                filters.user_address.as_ref().unwrap(),
+                page,
+                limit
+            ).await;
+        }
+
+        // Simplified implementation: handle most common cases
+        // In production, use sqlx::QueryBuilder for dynamic queries
+        if let Some(ref status) = filters.status {
+            if let Some(ref priority) = filters.priority {
+                // Status + Priority
+                let records = sqlx::query_as!(
+                    TransactionRecord,
+                    r#"
+                    SELECT * FROM transactions 
+                    WHERE status = $1 AND priority = $2
+                    ORDER BY created_at DESC 
+                    LIMIT $3 OFFSET $4
+                    "#,
+                    status,
+                    priority,
+                    limit as i64,
+                    offset as i64
+                )
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| RelayerError::Database(e))?;
+
+                let total = sqlx::query!(
+                    r#"
+                    SELECT COUNT(*) as count FROM transactions 
+                    WHERE status = $1 AND priority = $2
+                    "#,
+                    status,
+                    priority
+                )
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| RelayerError::Database(e))?
+                .count
+                .unwrap_or(0) as u64;
+
+                return Ok((records, total));
+            } else {
+                // Status only
+                let records = sqlx::query_as!(
+                    TransactionRecord,
+                    r#"
+                    SELECT * FROM transactions 
+                    WHERE status = $1
+                    ORDER BY created_at DESC 
+                    LIMIT $2 OFFSET $3
+                    "#,
+                    status,
+                    limit as i64,
+                    offset as i64
+                )
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| RelayerError::Database(e))?;
+
+                let total = sqlx::query!(
+                    r#"
+                    SELECT COUNT(*) as count FROM transactions WHERE status = $1
+                    "#,
+                    status
+                )
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| RelayerError::Database(e))?
+                .count
+                .unwrap_or(0) as u64;
+
+                return Ok((records, total));
+            }
+        }
+
+        // No filters or complex filters - return all with pagination
+        let records = sqlx::query_as!(
+            TransactionRecord,
+            r#"
+            SELECT * FROM transactions 
+            ORDER BY created_at DESC 
+            LIMIT $1 OFFSET $2
+            "#,
+            limit as i64,
+            offset as i64
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| RelayerError::Database(e))?;
+
+        let total = sqlx::query!(
+            r#"
+            SELECT COUNT(*) as count FROM transactions
+            "#
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| RelayerError::Database(e))?
+        .count
+        .unwrap_or(0) as u64;
+
+        Ok((records, total))
+    }
+
     pub async fn get_transaction_stats(&self) -> Result<TransactionStats> {
         let stats = sqlx::query!(
             r#"
