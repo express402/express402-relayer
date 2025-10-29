@@ -18,6 +18,7 @@ use crate::queue::scheduler::TaskScheduler;
 use crate::security::{SignatureVerifier, ReplayProtection};
 use crate::config::Config;
 use crate::services::EthereumProvider;
+use crate::utils::gas::GasPriceOracle;
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -28,6 +29,7 @@ pub struct ApiState {
     pub task_scheduler: Arc<TaskScheduler>,
     pub signature_verifier: Arc<SignatureVerifier>,
     pub replay_protection: Arc<ReplayProtection>,
+    pub gas_price_oracle: Option<Arc<GasPriceOracle>>,
     pub config: Arc<Config>,
 }
 
@@ -150,8 +152,10 @@ pub fn create_router(state: ApiState) -> Router {
         // Public routes (no authentication required)
         .route("/health", get(health_check))
         .route("/stats", get(get_stats))
+        .route("/gas-price", get(get_gas_price))
         // Protected routes (require authentication)
         .route("/transactions", post(submit_transaction))
+        .route("/transactions/batch", post(submit_batch_transactions))
         .route("/transactions/:id", get(get_transaction_status))
         .route("/users/:address/transactions", get(get_user_transactions))
         .route("/transactions/:id/cancel", post(cancel_transaction))
@@ -803,6 +807,229 @@ async fn cancel_transaction(
             }))
         ))
     }
+}
+
+// Gas price endpoint
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GasPriceResponse {
+    pub max_fee_per_gas: String,
+    pub max_priority_fee_per_gas: String,
+    pub base_fee: String,
+    pub timestamp: String,
+    pub block_number: u64,
+    pub trend: Option<String>,
+}
+
+async fn get_gas_price(
+    State(state): State<ApiState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<GasPriceResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let priority = params.get("priority").map(|s| s.as_str()).unwrap_or("normal");
+
+    if let Some(ref oracle) = state.gas_price_oracle {
+        match oracle.get_recommended_gas_price(priority).await {
+            Ok(gas_info) => {
+                Ok(Json(GasPriceResponse {
+                    max_fee_per_gas: gas_info.max_fee_per_gas.to_string(),
+                    max_priority_fee_per_gas: gas_info.max_priority_fee_per_gas.to_string(),
+                    base_fee: gas_info.base_fee.to_string(),
+                    timestamp: gas_info.timestamp.to_rfc3339(),
+                    block_number: gas_info.block_number,
+                    trend: None,
+                }))
+            }
+            Err(e) => {
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to get gas price: {}", e)
+                    }))
+                ))
+            }
+        }
+    } else {
+        // Fallback: get current gas price from provider
+        match state.ethereum_provider.get_gas_price().await {
+            Ok(gas_price) => {
+                let max_fee = gas_price * alloy::primitives::U256::from(110) / alloy::primitives::U256::from(100);
+                let priority_fee = gas_price * alloy::primitives::U256::from(10) / alloy::primitives::U256::from(100);
+                
+                Ok(Json(GasPriceResponse {
+                    max_fee_per_gas: max_fee.to_string(),
+                    max_priority_fee_per_gas: priority_fee.to_string(),
+                    base_fee: gas_price.to_string(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    block_number: 0,
+                    trend: None,
+                }))
+            }
+            Err(e) => {
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": format!("Failed to get gas price: {}", e)
+                    }))
+                ))
+            }
+        }
+    }
+}
+
+// Batch transaction endpoint
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BatchTransactionRequest {
+    pub transactions: Vec<SubmitTransactionRequest>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BatchTransactionResponse {
+    pub batch_id: Uuid,
+    pub transaction_ids: Vec<Uuid>,
+    pub status: String,
+    pub message: String,
+}
+
+async fn submit_batch_transactions(
+    State(state): State<ApiState>,
+    Json(payload): Json<BatchTransactionRequest>,
+) -> Result<Json<BatchTransactionResponse>, (StatusCode, Json<serde_json::Value>)> {
+    if payload.transactions.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Batch must contain at least one transaction"
+            })),
+        ));
+    }
+
+    if payload.transactions.len() > 100 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Batch size exceeds maximum limit of 100 transactions"
+            })),
+        ));
+    }
+
+    let batch_id = Uuid::new_v4();
+    let mut transaction_ids = Vec::new();
+    let mut errors = Vec::new();
+
+    // Process each transaction in the batch
+    for (index, tx_request) in payload.transactions.iter().enumerate() {
+        match process_single_transaction(&state, tx_request).await {
+            Ok(tx_id) => {
+                transaction_ids.push(tx_id);
+            }
+            Err(e) => {
+                errors.push(format!("Transaction {}: {}", index, e));
+            }
+        }
+    }
+
+    let status = if errors.is_empty() {
+        "success"
+    } else if transaction_ids.is_empty() {
+        "failed"
+    } else {
+        "partial"
+    };
+
+    let message = if errors.is_empty() {
+        format!("Successfully submitted {} transactions", transaction_ids.len())
+    } else {
+        format!("Submitted {} transactions, {} failed: {}", 
+                transaction_ids.len(), 
+                errors.len(),
+                errors.join("; "))
+    };
+
+    Ok(Json(BatchTransactionResponse {
+        batch_id,
+        transaction_ids,
+        status: status.to_string(),
+        message,
+    }))
+}
+
+// Helper function to process a single transaction
+async fn process_single_transaction(
+    state: &ApiState,
+    payload: &SubmitTransactionRequest,
+) -> Result<Uuid, String> {
+    // Parse and validate addresses
+    let user_address = payload.user_address.parse::<alloy::primitives::Address>()
+        .map_err(|_| "Invalid user_address format".to_string())?;
+
+    let target_contract = payload.target_contract.parse::<alloy::primitives::Address>()
+        .map_err(|_| "Invalid target_contract format".to_string())?;
+
+    // Parse calldata
+    let calldata = if payload.calldata.starts_with("0x") {
+        hex::decode(&payload.calldata[2..])
+            .map_err(|_| "Invalid calldata format".to_string())?
+    } else {
+        hex::decode(&payload.calldata)
+            .map_err(|_| "Invalid calldata format".to_string())?
+    };
+
+    // Parse numeric values
+    let value = payload.value.parse::<alloy::primitives::U256>()
+        .map_err(|_| "Invalid value format".to_string())?;
+
+    let gas_limit = payload.gas_limit.parse::<alloy::primitives::U256>()
+        .map_err(|_| "Invalid gas_limit format".to_string())?;
+
+    let max_fee_per_gas = payload.max_fee_per_gas.parse::<alloy::primitives::U256>()
+        .map_err(|_| "Invalid max_fee_per_gas format".to_string())?;
+
+    let max_priority_fee_per_gas = payload.max_priority_fee_per_gas.parse::<alloy::primitives::U256>()
+        .map_err(|_| "Invalid max_priority_fee_per_gas format".to_string())?;
+
+    let nonce = payload.nonce.parse::<alloy::primitives::U256>()
+        .map_err(|_| "Invalid nonce format".to_string())?;
+
+    let signature_r = payload.signature_r.parse::<alloy::primitives::U256>()
+        .map_err(|_| "Invalid signature_r format".to_string())?;
+
+    let signature_s = payload.signature_s.parse::<alloy::primitives::U256>()
+        .map_err(|_| "Invalid signature_s format".to_string())?;
+
+    let priority = match payload.priority.as_str() {
+        "low" => crate::types::Priority::Low,
+        "normal" => crate::types::Priority::Normal,
+        "high" => crate::types::Priority::High,
+        "critical" => crate::types::Priority::Critical,
+        _ => return Err("Invalid priority".to_string()),
+    };
+
+    // Create transaction request
+    let transaction_request = TransactionRequest::new(
+        user_address,
+        target_contract,
+        alloy::primitives::Bytes::from(calldata),
+        value,
+        gas_limit,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        nonce,
+        crate::types::Signature {
+            r: signature_r,
+            s: signature_s,
+            v: payload.signature_v,
+        },
+        priority,
+    );
+
+    // Store in database
+    state.database_manager.create_transaction(&transaction_request).await
+        .map_err(|e| format!("Database error: {}", e))?;
+
+    // Submit to task scheduler
+    let task_id = state.task_scheduler.schedule_task(transaction_request).await
+        .map_err(|e| format!("Scheduler error: {}", e))?;
+
+    Ok(task_id)
 }
 
 #[cfg(test)]

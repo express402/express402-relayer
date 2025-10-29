@@ -8,6 +8,7 @@ use crate::{
     wallet::{WalletPool, WalletPoolConfig},
     queue::{TaskScheduler, ConcurrencyLimits, TaskExecutor, TransactionTracker},
     security::{SignatureVerifier, ReplayProtection, BalanceChecker},
+    utils::gas::GasPriceOracle,
     api::{ApiState, create_router},
     types::{RelayerError, Result},
 };
@@ -30,6 +31,7 @@ pub struct ServiceManager {
     pub ethereum_provider: Arc<EthereumProvider>,
     pub balance_checker: Option<BalanceChecker<EthereumProvider>>,
     pub transaction_tracker: Option<Arc<TransactionTracker>>,
+    pub gas_price_oracle: Option<Arc<GasPriceOracle>>,
 }
 
 impl ServiceManager {
@@ -166,6 +168,17 @@ impl ServiceManager {
             config.ethereum.confirmation_blocks,
         )));
 
+        // Initialize gas price oracle
+        use crate::utils::gas::GasPriceOracle;
+        use tokio::time::Duration;
+        let gas_price_oracle = Some(Arc::new(GasPriceOracle::new(
+            Arc::clone(&ethereum_provider),
+            config.ethereum.gas_price_multiplier,
+            alloy::primitives::U256::from(config.ethereum.min_gas_price),
+            alloy::primitives::U256::from(config.ethereum.max_gas_price),
+            Duration::from_secs(30), // Update every 30 seconds
+        )));
+
         tracing::info!("All services initialized successfully");
 
         Ok(Self {
@@ -181,6 +194,7 @@ impl ServiceManager {
             ethereum_provider,
             balance_checker,
             transaction_tracker,
+            gas_price_oracle,
         })
     }
 
@@ -261,6 +275,17 @@ impl ServiceManager {
             tracing::info!("Transaction tracking loop started");
         }
 
+        // Start gas price oracle update loop
+        if let Some(ref oracle) = self.gas_price_oracle {
+            let oracle_clone = Arc::clone(oracle);
+            tokio::spawn(async move {
+                if let Err(e) = oracle_clone.start_update_loop().await {
+                    tracing::error!("Gas price oracle update loop failed: {}", e);
+                }
+            });
+            tracing::info!("Gas price oracle started");
+        }
+
         // Start wallet balance monitoring if balance_checker is available
         if let Some(ref balance_checker) = self.balance_checker {
             use crate::wallet::monitor::WalletMonitor;
@@ -305,6 +330,7 @@ impl ServiceManager {
             task_scheduler: Arc::new(self.task_scheduler.clone()),
             signature_verifier: Arc::new(self.signature_verifier.clone()),
             replay_protection: Arc::new(self.replay_protection.clone()),
+            gas_price_oracle: self.gas_price_oracle.clone(),
             config: Arc::new(self.config.clone()),
         }
     }
@@ -418,6 +444,7 @@ impl Clone for ServiceManager {
             ethereum_provider: Arc::clone(&self.ethereum_provider),
             balance_checker: self.balance_checker.clone(),
             transaction_tracker: self.transaction_tracker.clone(),
+            gas_price_oracle: self.gas_price_oracle.clone(),
         }
     }
 }
