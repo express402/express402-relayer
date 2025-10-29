@@ -1,6 +1,7 @@
 use express402_relayer::{
     api::{create_router, ApiState},
     config::Config,
+    services::ServiceManager,
     types::RelayerError,
 };
 use axum::{
@@ -27,7 +28,13 @@ async fn main() -> Result<(), RelayerError> {
     info!("Configuration loaded successfully");
 
     // Initialize services
-    let api_state = initialize_services(config).await?;
+    let service_manager = Arc::new(ServiceManager::new(config.clone()).await?);
+    
+    // Start background tasks
+    service_manager.start_background_tasks().await?;
+    
+    // Create API state
+    let api_state = service_manager.create_api_state();
 
     // Create the router with middleware
     let app = create_router(api_state)
@@ -43,116 +50,27 @@ async fn main() -> Result<(), RelayerError> {
 
     info!("Server listening on {}:{}", config.server.host, config.server.port);
 
-    // Start the server
+    // Setup graceful shutdown
+    let shutdown_signal = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install CTRL+C signal handler");
+        info!("Received shutdown signal");
+    };
+
+    // Start the server with graceful shutdown
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
         .await
         .map_err(|e| RelayerError::Internal(e.to_string()))?;
 
+    // Shutdown services
+    service_manager.shutdown().await?;
+
+    info!("Server shutdown completed");
     Ok(())
 }
 
-async fn initialize_services(config: Config) -> Result<ApiState, RelayerError> {
-    info!("Initializing services...");
-
-    // Initialize database connection pool
-    info!("Connecting to database...");
-    let database_manager = express402_relayer::cache::persistence::DatabaseManager::new(&config.database.url)
-        .await?;
-    
-    // Run database migrations
-    info!("Running database migrations...");
-    database_manager.run_migrations().await?;
-    
-    // Test database connection
-    database_manager.health_check().await?;
-    info!("Database connection established successfully");
-
-    // Initialize Redis cache
-    info!("Connecting to Redis...");
-    let redis_cache = express402_relayer::cache::RedisCache::new(
-        &config.redis.url,
-        config.redis.key_prefix.clone(),
-        std::time::Duration::from_secs(3600), // 1 hour default TTL
-    )?;
-    
-    redis_cache.connect().await?;
-    info!("Redis connection established successfully");
-
-    // Initialize memory cache
-    let memory_cache = express402_relayer::cache::MemoryCache::new(
-        10000, // max 10k entries
-        std::time::Duration::from_secs(1800), // 30 minutes default TTL
-        std::time::Duration::from_secs(300), // cleanup every 5 minutes
-    );
-
-    // Initialize cache manager
-    let cache_manager = express402_relayer::cache::CacheManager::new(
-        memory_cache,
-        Some(redis_cache),
-        true, // use Redis
-    );
-
-    // Initialize Ethereum provider
-    info!("Connecting to Ethereum provider...");
-    let ethereum_provider = alloy::providers::ProviderBuilder::new()
-        .on_http(config.ethereum.rpc_url.parse()
-            .map_err(|e| RelayerError::Ethereum(format!("Invalid RPC URL: {}", e)))?);
-    info!("Ethereum provider connected successfully");
-
-    // Initialize wallet pool
-    info!("Initializing wallet pool...");
-    let wallet_pool_config = express402_relayer::types::WalletPoolConfig {
-        max_concurrent_transactions: config.wallets.max_concurrent_transactions,
-        min_balance: config.wallets.min_balance,
-        transaction_timeout: config.wallets.transaction_timeout,
-        retry_attempts: config.wallets.retry_attempts,
-        retry_delay: config.wallets.retry_delay,
-    };
-    let wallet_pool = express402_relayer::wallet::pool::WalletPool::new(wallet_pool_config);
-
-    // Add wallets from configuration
-    for private_key_str in &config.wallets.private_keys {
-        let private_key_bytes = hex::decode(private_key_str)
-            .map_err(|e| RelayerError::WalletPool(format!("Invalid private key: {}", e)))?;
-        
-        let private_key = alloy::signers::k256::ecdsa::SigningKey::from_bytes(&private_key_bytes.into())
-            .map_err(|e| RelayerError::WalletPool(format!("Invalid private key format: {}", e)))?;
-        
-        wallet_pool.add_wallet(private_key).await?;
-    }
-    info!("Wallet pool initialized with {} wallets", config.wallets.private_keys.len());
-
-    // Initialize task scheduler
-    info!("Initializing task scheduler...");
-    let task_scheduler = express402_relayer::queue::scheduler::TaskScheduler::new(
-        config.queue.worker_threads,
-        config.queue.max_queue_size,
-        std::time::Duration::from_secs(config.queue.processing_timeout),
-    );
-    info!("Task scheduler initialized successfully");
-
-    // Initialize security services
-    info!("Initializing security services...");
-    let signature_verifier = express402_relayer::security::signature::SignatureVerifier::new(
-        alloy::primitives::U256::from(config.ethereum.chain_id),
-        alloy::primitives::Address::ZERO, // TODO: Set actual verifying contract address
-    );
-    info!("Security services initialized successfully");
-
-    // Initialize API state
-    let api_state = ApiState {
-        database_manager: Arc::new(database_manager),
-        cache_manager: Arc::new(cache_manager),
-        ethereum_provider: Arc::new(ethereum_provider),
-        wallet_pool: Arc::new(wallet_pool),
-        task_scheduler: Arc::new(task_scheduler),
-        signature_verifier: Arc::new(signature_verifier),
-        config: Arc::new(config),
-    };
-
-    info!("All services initialized successfully");
-    Ok(api_state)
-}
 
 // Middleware functions (simplified versions)
 async fn cors_middleware(
