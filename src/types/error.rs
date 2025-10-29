@@ -43,6 +43,12 @@ pub enum RelayerError {
     
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Network error: {0}")]
+    Network(String),
+
+    #[error("Timeout error: {0}")]
+    Timeout(String),
 }
 
 pub type Result<T> = std::result::Result<T, RelayerError>;

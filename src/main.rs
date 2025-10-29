@@ -25,7 +25,14 @@ async fn main() -> Result<(), RelayerError> {
     let config = Config::from_env()
         .map_err(|e| RelayerError::Config(e.to_string()))?;
 
-    info!("Configuration loaded successfully");
+    // Validate configuration
+    config.validate_or_error()
+        .map_err(|e| {
+            error!("Configuration validation failed: {}", e);
+            e
+        })?;
+
+    info!("Configuration loaded and validated successfully");
 
     // Initialize services
     let service_manager = Arc::new(ServiceManager::new(config.clone()).await?);
