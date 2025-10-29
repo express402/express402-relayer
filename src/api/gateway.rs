@@ -153,6 +153,7 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/health", get(health_check))
         .route("/stats", get(get_stats))
         .route("/gas-price", get(get_gas_price))
+        .route("/metrics", get(get_metrics))
         // Protected routes (require authentication)
         .route("/transactions", post(submit_transaction))
         .route("/transactions/batch", post(submit_batch_transactions))
@@ -387,6 +388,179 @@ async fn get_stats(
             hit_rate: cache_stats.memory_stats.hit_rate,
         },
         transaction_stats,
+    }))
+}
+
+// Detailed metrics endpoint
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MetricsResponse {
+    pub system: SystemMetrics,
+    pub queue: QueueMetrics,
+    pub wallet: WalletMetrics,
+    pub gas_price: Option<GasPriceMetrics>,
+    pub transaction_tracker: Option<TransactionTrackerMetrics>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SystemMetrics {
+    pub uptime_seconds: u64,
+    pub memory_usage_mb: Option<f64>,
+    pub cpu_usage_percent: Option<f64>,
+    pub active_connections: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct QueueMetrics {
+    pub pending_tasks: usize,
+    pub processing_tasks: usize,
+    pub completed_tasks: usize,
+    pub failed_tasks: usize,
+    pub available_permits: usize,
+    pub max_queue_size: usize,
+    pub queue_utilization_percent: f64,
+    pub average_processing_time_seconds: Option<f64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WalletMetrics {
+    pub total_wallets: usize,
+    pub active_wallets: usize,
+    pub healthy_wallets: usize,
+    pub unhealthy_wallets: usize,
+    pub total_transactions: u64,
+    pub successful_transactions: u64,
+    pub failed_transactions: u64,
+    pub overall_success_rate: f64,
+    pub average_balance_wei: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GasPriceMetrics {
+    pub current_max_fee_gwei: String,
+    pub current_priority_fee_gwei: String,
+    pub base_fee_gwei: String,
+    pub trend: String,
+    pub min_max_fee_gwei: String,
+    pub max_max_fee_gwei: String,
+    pub average_max_fee_gwei: String,
+    pub last_updated: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransactionTrackerMetrics {
+    pub pending_transactions: usize,
+    pub oldest_pending_seconds: Option<u64>,
+    pub check_interval_seconds: u64,
+    pub confirmation_blocks: u64,
+}
+
+async fn get_metrics(
+    State(state): State<ApiState>,
+) -> Result<Json<MetricsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Get queue stats
+    let queue_stats = state.task_scheduler.get_queue_stats().await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to get queue stats: {}", e)
+            }))
+        ))?;
+
+    // Get wallet pool stats
+    let wallet_stats = state.wallet_pool.get_pool_stats().await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to get wallet stats: {}", e)
+            }))
+        ))?;
+
+    // Get gas price metrics
+    let gas_price_metrics = if let Some(ref oracle) = state.gas_price_oracle {
+        match oracle.get_statistics().await {
+            Ok(stats) => {
+                Some(GasPriceMetrics {
+                    current_max_fee_gwei: (stats.current_max_fee.to::<u64>() as f64 / 1_000_000_000.0).to_string(),
+                    current_priority_fee_gwei: (stats.current_priority_fee.to::<u64>() as f64 / 1_000_000_000.0).to_string(),
+                    base_fee_gwei: (stats.current_max_fee.to::<u64>() as f64 / 1_000_000_000.0).to_string(),
+                    trend: stats.trend,
+                    min_max_fee_gwei: (stats.min_max_fee.to::<u64>() as f64 / 1_000_000_000.0).to_string(),
+                    max_max_fee_gwei: (stats.max_max_fee.to::<u64>() as f64 / 1_000_000_000.0).to_string(),
+                    average_max_fee_gwei: (stats.average_max_fee.to::<u64>() as f64 / 1_000_000_000.0).to_string(),
+                    last_updated: stats.last_updated.to_rfc3339(),
+                })
+            }
+            Err(e) => {
+                tracing::warn!("Failed to get gas price statistics: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Get transaction tracker metrics
+    let tracker_metrics = if let Some(ref tracker) = state.transaction_tracker {
+        match tracker.get_tracking_stats().await {
+            Ok(stats) => {
+                Some(TransactionTrackerMetrics {
+                    pending_transactions: stats.total_pending,
+                    oldest_pending_seconds: stats.oldest_pending_seconds,
+                    check_interval_seconds: stats.check_interval_seconds,
+                    confirmation_blocks: stats.confirmation_blocks,
+                })
+            }
+            Err(e) => {
+                tracing::warn!("Failed to get tracker stats: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Calculate queue utilization
+    let queue_utilization = if queue_stats.max_queue_size > 0 {
+        (queue_stats.pending_tasks + queue_stats.processing_tasks) as f64 / queue_stats.max_queue_size as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    // Get transaction stats for wallet metrics
+    let db_stats = state.database_manager.get_transaction_stats().await.ok();
+    let successful_txs = db_stats.as_ref().map(|s| s.confirmed_transactions).unwrap_or(0);
+    let failed_txs = db_stats.as_ref().map(|s| s.failed_transactions).unwrap_or(0);
+
+    Ok(Json(MetricsResponse {
+        system: SystemMetrics {
+            uptime_seconds: 0, // Would need to track startup time
+            memory_usage_mb: None, // Would need system monitoring
+            cpu_usage_percent: None, // Would need system monitoring
+            active_connections: 0, // Would need connection tracking
+        },
+        queue: QueueMetrics {
+            pending_tasks: queue_stats.pending_tasks,
+            processing_tasks: queue_stats.processing_tasks,
+            completed_tasks: queue_stats.completed_tasks,
+            failed_tasks: queue_stats.failed_tasks,
+            available_permits: queue_stats.available_permits,
+            max_queue_size: queue_stats.max_queue_size,
+            queue_utilization_percent: queue_utilization,
+            average_processing_time_seconds: None, // Would need to track processing times
+        },
+        wallet: WalletMetrics {
+            total_wallets: wallet_stats.total_wallets,
+            active_wallets: wallet_stats.active_wallets,
+            healthy_wallets: wallet_stats.healthy_wallets,
+            unhealthy_wallets: wallet_stats.total_wallets.saturating_sub(wallet_stats.healthy_wallets),
+            total_transactions: wallet_stats.total_transactions,
+            successful_transactions: successful_txs,
+            failed_transactions: failed_txs,
+            overall_success_rate: wallet_stats.overall_success_rate,
+            average_balance_wei: None, // Would need to fetch wallet balances
+        },
+        gas_price: gas_price_metrics,
+        transaction_tracker: tracker_metrics,
     }))
 }
 

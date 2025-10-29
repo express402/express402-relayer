@@ -16,6 +16,7 @@ use crate::{
     types::{RelayerError, Result, TransactionRequest, TransactionStatus},
     wallet::pool::WalletPool,
     wallet::WalletInfo,
+    utils::gas::GasPriceOracle,
 };
 
 #[derive(Debug, Clone)]
@@ -25,6 +26,7 @@ pub struct TaskExecutor {
     database: Arc<DatabaseManager>,
     ethereum_provider: Arc<RootProvider>,
     transaction_tracker: Option<Arc<TransactionTracker>>,
+    gas_price_oracle: Option<Arc<GasPriceOracle>>,
     max_retries: u32,
     retry_delay: Duration,
 }
@@ -44,6 +46,7 @@ impl TaskExecutor {
         database: Arc<DatabaseManager>,
         ethereum_provider: Arc<RootProvider>,
         transaction_tracker: Option<Arc<TransactionTracker>>,
+        gas_price_oracle: Option<Arc<GasPriceOracle>>,
         max_retries: u32,
         retry_delay: Duration,
     ) -> Self {
@@ -53,6 +56,7 @@ impl TaskExecutor {
             database,
             ethereum_provider,
             transaction_tracker,
+            gas_price_oracle,
             max_retries,
             retry_delay,
         }
@@ -171,6 +175,41 @@ impl TaskExecutor {
             .await
             .map_err(|e| RelayerError::Ethereum(format!("Failed to get chain ID: {}", e)))?;
 
+        // Determine gas prices - use oracle if available and user's gas price is too low
+        let (max_fee_per_gas, max_priority_fee_per_gas) = if let Some(ref oracle) = self.gas_price_oracle {
+            let current_gas = oracle.get_current_gas_price().await;
+            let priority_str = match request.priority {
+                crate::types::Priority::Critical => "critical",
+                crate::types::Priority::High => "high",
+                crate::types::Priority::Normal => "normal",
+                crate::types::Priority::Low => "low",
+            };
+            
+            // Use oracle-recommended gas price if user's gas price is less than 80% of current
+            let recommended_gas = oracle.get_recommended_gas_price(priority_str).await
+                .unwrap_or(current_gas.clone());
+            
+            let user_max_fee = request.max_fee_per_gas.to::<u64>() as f64;
+            let recommended_max_fee = recommended_gas.max_fee_per_gas.to::<u64>() as f64;
+            
+            if user_max_fee < recommended_max_fee * 0.8 {
+                // User's gas price is too low, use recommended price
+                tracing::info!(
+                    "Adjusting gas price from {} to {} gwei (recommended: {} gwei)",
+                    user_max_fee / 1_000_000_000.0,
+                    recommended_gas.max_fee_per_gas.to::<u64>() as f64 / 1_000_000_000.0,
+                    recommended_max_fee / 1_000_000_000.0
+                );
+                (recommended_gas.max_fee_per_gas, recommended_gas.max_priority_fee_per_gas)
+            } else {
+                // User's gas price is acceptable, use it
+                (request.max_fee_per_gas, request.max_priority_fee_per_gas)
+            }
+        } else {
+            // No oracle available, use user's gas price
+            (request.max_fee_per_gas, request.max_priority_fee_per_gas)
+        };
+
         // Build and sign transaction
         if let Some(ref private_key) = wallet_info.private_key {
             let wallet = LocalWallet::from(
@@ -185,8 +224,8 @@ impl TaskExecutor {
                 .with_value(request.value)
                 .with_input(request.calldata.clone())
                 .with_gas_limit(request.gas_limit.to::<u64>())
-                .with_max_fee_per_gas(request.max_fee_per_gas)
-                .with_max_priority_fee_per_gas(request.max_priority_fee_per_gas)
+                .with_max_fee_per_gas(max_fee_per_gas)
+                .with_max_priority_fee_per_gas(max_priority_fee_per_gas)
                 .with_nonce(wallet_nonce.to::<u64>())
                 .with_chain_id(chain_id.to::<u64>());
 

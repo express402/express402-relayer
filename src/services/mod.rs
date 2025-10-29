@@ -251,6 +251,7 @@ impl ServiceManager {
             Arc::new(self.database.clone()),
             Arc::clone(&self.ethereum_provider),
             self.transaction_tracker.clone(),
+            self.gas_price_oracle.clone(),
             3, // max_retries
             Duration::from_secs(self.config.wallets.retry_delay),
         ));
