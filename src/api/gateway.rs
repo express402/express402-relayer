@@ -1210,6 +1210,217 @@ async fn process_single_transaction(
     Ok(task_id)
 }
 
+// Admin endpoints
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct QueueDetailsResponse {
+    pub stats: QueueStatsResponse,
+    pub pending_tasks: Vec<PendingTaskInfo>,
+    pub processing_tasks: Vec<ProcessingTaskInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PendingTaskInfo {
+    pub task_id: Uuid,
+    pub priority: String,
+    pub created_at: String,
+    pub age_seconds: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProcessingTaskInfo {
+    pub task_id: Uuid,
+    pub priority: String,
+    pub started_at: String,
+    pub processing_time_seconds: u64,
+}
+
+async fn get_queue_details(
+    State(state): State<ApiState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<QueueDetailsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let _limit = params
+        .get("limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(100);
+
+    let queue_stats = state.task_scheduler.get_queue_stats().await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to get queue stats: {}", e)
+            }))
+        ))?;
+
+    // For simplicity, we'll return empty lists for pending/processing tasks
+    // In a full implementation, you'd fetch actual task details from the scheduler
+    Ok(Json(QueueDetailsResponse {
+        stats: QueueStatsResponse {
+            pending_tasks: queue_stats.pending_tasks,
+            processing_tasks: queue_stats.processing_tasks,
+            completed_tasks: queue_stats.completed_tasks,
+            failed_tasks: queue_stats.failed_tasks,
+            available_permits: queue_stats.available_permits,
+        },
+        pending_tasks: Vec::new(), // Would be populated from scheduler
+        processing_tasks: Vec::new(), // Would be populated from scheduler
+    }))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WalletDetailsResponse {
+    pub stats: WalletStatsResponse,
+    pub wallets: Vec<WalletDetailInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WalletDetailInfo {
+    pub address: String,
+    pub balance_wei: Option<String>,
+    pub is_active: bool,
+    pub is_healthy: bool,
+    pub total_transactions: u64,
+    pub success_rate: f64,
+    pub last_used: Option<String>,
+}
+
+async fn get_wallet_details(
+    State(state): State<ApiState>,
+) -> Result<Json<WalletDetailsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let wallet_stats = state.wallet_pool.get_pool_stats().await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to get wallet stats: {}", e)
+            }))
+        ))?;
+
+    // Get wallet pool info - this would need to be implemented in WalletPool
+    // For now, return empty wallet list
+    Ok(Json(WalletDetailsResponse {
+        stats: WalletStatsResponse {
+            total_wallets: wallet_stats.total_wallets,
+            active_wallets: wallet_stats.active_wallets,
+            healthy_wallets: wallet_stats.healthy_wallets,
+            total_transactions: wallet_stats.total_transactions,
+            overall_success_rate: wallet_stats.overall_success_rate,
+        },
+        wallets: Vec::new(), // Would be populated from wallet pool
+    }))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfigInfoResponse {
+    pub server: ServerConfigInfo,
+    pub database: DatabaseConfigInfo,
+    pub ethereum: EthereumConfigInfo,
+    pub queue: QueueConfigInfo,
+    pub security: SecurityConfigInfo,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerConfigInfo {
+    pub host: String,
+    pub port: u16,
+    pub max_connections: u32,
+    pub request_timeout: u64,
+    pub rate_limit_per_minute: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DatabaseConfigInfo {
+    pub url_hidden: String, // URL with password hidden
+    pub max_connections: u32,
+    pub min_connections: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EthereumConfigInfo {
+    pub rpc_url_hidden: String, // URL with API key hidden
+    pub chain_id: u64,
+    pub gas_price_multiplier: f64,
+    pub confirmation_blocks: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct QueueConfigInfo {
+    pub max_queue_size: usize,
+    pub worker_threads: usize,
+    pub batch_size: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SecurityConfigInfo {
+    pub signature_timeout: u64,
+    pub nonce_window: u64,
+    pub enable_replay_protection: bool,
+}
+
+async fn get_config_info(
+    State(state): State<ApiState>,
+) -> Result<Json<ConfigInfoResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Hide sensitive information
+    let db_url = hide_sensitive_info(&state.config.database.url);
+    let eth_url = hide_sensitive_info(&state.config.ethereum.rpc_url);
+
+    Ok(Json(ConfigInfoResponse {
+        server: ServerConfigInfo {
+            host: state.config.server.host.clone(),
+            port: state.config.server.port,
+            max_connections: state.config.server.max_connections,
+            request_timeout: state.config.server.request_timeout,
+            rate_limit_per_minute: state.config.server.rate_limit_per_minute,
+        },
+        database: DatabaseConfigInfo {
+            url_hidden: db_url,
+            max_connections: state.config.database.max_connections,
+            min_connections: state.config.database.min_connections,
+        },
+        ethereum: EthereumConfigInfo {
+            rpc_url_hidden: eth_url,
+            chain_id: state.config.ethereum.chain_id,
+            gas_price_multiplier: state.config.ethereum.gas_price_multiplier,
+            confirmation_blocks: state.config.ethereum.confirmation_blocks,
+        },
+        queue: QueueConfigInfo {
+            max_queue_size: state.config.queue.max_queue_size,
+            worker_threads: state.config.queue.worker_threads,
+            batch_size: state.config.queue.batch_size,
+        },
+        security: SecurityConfigInfo {
+            signature_timeout: state.config.security.signature_timeout,
+            nonce_window: state.config.security.nonce_window,
+            enable_replay_protection: state.config.security.enable_replay_protection,
+        },
+    }))
+}
+
+fn hide_sensitive_info(url: &str) -> String {
+    // Simple hiding of passwords/API keys in URLs
+    if let Some(at_pos) = url.find('@') {
+        if let Some(before_at) = url.get(..at_pos) {
+            if let Some(colon_pos) = before_at.rfind(':') {
+                let prefix = &url[..colon_pos + 1];
+                let after_at = &url[at_pos..];
+                return format!("{}***{}", prefix, after_at);
+            }
+        }
+    }
+    // For API keys in query params
+    if url.contains("api-key") || url.contains("apikey") {
+        return url.split('&').map(|part| {
+            if part.contains("key") || part.contains("Key") {
+                let eq_pos = part.find('=').unwrap_or(part.len());
+                format!("{}***", &part[..=eq_pos])
+            } else {
+                part.to_string()
+            }
+        }).collect::<Vec<_>>().join("&");
+    }
+    url.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
