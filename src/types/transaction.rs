@@ -106,6 +106,19 @@ pub enum TransactionStatus {
     Cancelled,
 }
 
+impl TransactionStatus {
+    pub fn to_string(&self) -> String {
+        match self {
+            TransactionStatus::Pending => "pending".to_string(),
+            TransactionStatus::Processing => "processing".to_string(),
+            TransactionStatus::Submitted => "submitted".to_string(),
+            TransactionStatus::Confirmed => "confirmed".to_string(),
+            TransactionStatus::Failed => "failed".to_string(),
+            TransactionStatus::Cancelled => "cancelled".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionResult {
     pub id: Uuid,

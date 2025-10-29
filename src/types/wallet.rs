@@ -60,6 +60,11 @@ pub struct WalletPoolConfig {
     pub balance_threshold: alloy::primitives::U256,
     pub rotation_interval: u64, // seconds
     pub health_check_interval: u64, // seconds
+    pub max_concurrent_transactions: u32,
+    pub min_balance: u64,
+    pub transaction_timeout: u64,
+    pub retry_attempts: u32,
+    pub retry_delay: u64,
 }
 
 impl Default for WalletPoolConfig {
@@ -70,6 +75,11 @@ impl Default for WalletPoolConfig {
             balance_threshold: alloy::primitives::U256::from(1000000000000000000u64), // 1 ETH
             rotation_interval: 300, // 5 minutes
             health_check_interval: 60, // 1 minute
+            max_concurrent_transactions: 5,
+            min_balance: 1000000000000000000, // 1 ETH
+            transaction_timeout: 60,
+            retry_attempts: 3,
+            retry_delay: 5,
         }
     }
 }
