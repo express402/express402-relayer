@@ -6,7 +6,7 @@ use crate::{
     database::DatabaseManager,
     cache::{RedisCache, MemoryCache, CacheManager},
     wallet::{WalletPool, WalletPoolConfig},
-    queue::{TaskScheduler, ConcurrencyLimits},
+    queue::{TaskScheduler, ConcurrencyLimits, TaskExecutor, TransactionTracker},
     security::{SignatureVerifier, ReplayProtection, BalanceChecker},
     api::{ApiState, create_router},
     types::{RelayerError, Result},
@@ -29,6 +29,7 @@ pub struct ServiceManager {
     pub replay_protection: ReplayProtection,
     pub ethereum_provider: Arc<EthereumProvider>,
     pub balance_checker: Option<BalanceChecker<EthereumProvider>>,
+    pub transaction_tracker: Option<Arc<TransactionTracker>>,
 }
 
 impl ServiceManager {
@@ -155,6 +156,16 @@ impl ServiceManager {
             std::time::Duration::from_secs(60), // 1 minute cache TTL
         ));
 
+        // Initialize transaction tracker
+        use crate::queue::tracker::TransactionTracker;
+        use std::sync::Arc;
+        let transaction_tracker = Some(Arc::new(TransactionTracker::new(
+            Arc::new(database.clone()),
+            Arc::clone(&ethereum_provider),
+            std::time::Duration::from_secs(10), // Check every 10 seconds
+            config.ethereum.confirmation_blocks,
+        )));
+
         tracing::info!("All services initialized successfully");
 
         Ok(Self {
@@ -169,6 +180,7 @@ impl ServiceManager {
             replay_protection,
             ethereum_provider,
             balance_checker,
+            transaction_tracker,
         })
     }
 
@@ -224,6 +236,7 @@ impl ServiceManager {
             Arc::new(self.wallet_pool.clone()),
             Arc::new(self.database.clone()),
             Arc::clone(&self.ethereum_provider),
+            self.transaction_tracker.clone(),
             3, // max_retries
             Duration::from_secs(self.config.wallets.retry_delay),
         ));
@@ -236,6 +249,17 @@ impl ServiceManager {
             }
         });
         tracing::info!("Task execution loop started");
+
+        // Start transaction tracking loop
+        if let Some(ref tracker) = self.transaction_tracker {
+            let tracker_clone = Arc::clone(tracker);
+            tokio::spawn(async move {
+                if let Err(e) = tracker_clone.start_tracking_loop().await {
+                    tracing::error!("Transaction tracking loop failed: {}", e);
+                }
+            });
+            tracing::info!("Transaction tracking loop started");
+        }
 
         // Start wallet balance monitoring if balance_checker is available
         if let Some(ref balance_checker) = self.balance_checker {
@@ -393,6 +417,7 @@ impl Clone for ServiceManager {
             replay_protection: self.replay_protection.clone(),
             ethereum_provider: Arc::clone(&self.ethereum_provider),
             balance_checker: self.balance_checker.clone(),
+            transaction_tracker: self.transaction_tracker.clone(),
         }
     }
 }

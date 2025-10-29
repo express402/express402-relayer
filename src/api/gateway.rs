@@ -131,14 +131,70 @@ pub struct TransactionStatsResponse {
 }
 
 pub fn create_router(state: ApiState) -> Router {
+    use axum::middleware;
+    use std::sync::Arc;
+    
+    // Create auth manager and rate limiter for middleware
+    let auth_manager = Arc::new(crate::api::auth::AuthManager::new(
+        state.config.security.signature_timeout.to_string(),
+    ));
+    let rate_limiter = Arc::new(crate::api::auth::RateLimiter::new(
+        crate::api::auth::RateLimit {
+            requests_per_minute: state.config.server.rate_limit_per_minute,
+            requests_per_hour: state.config.server.rate_limit_per_minute * 60,
+            requests_per_day: state.config.server.rate_limit_per_minute * 60 * 24,
+        },
+    ));
+    
     Router::new()
+        // Public routes (no authentication required)
         .route("/health", get(health_check))
         .route("/stats", get(get_stats))
+        // Protected routes (require authentication)
         .route("/transactions", post(submit_transaction))
         .route("/transactions/:id", get(get_transaction_status))
         .route("/users/:address/transactions", get(get_user_transactions))
         .route("/transactions/:id/cancel", post(cancel_transaction))
+        // Apply rate limiting middleware to all routes
+        .layer(middleware::from_fn_with_state(
+            (auth_manager.clone(), rate_limiter),
+            rate_limit_middleware,
+        ))
         .with_state(state)
+}
+
+// Rate limiting middleware (simplified version)
+async fn rate_limit_middleware(
+    axum::extract::State((_auth_manager, rate_limiter)): axum::extract::State<(Arc<crate::api::auth::AuthManager>, Arc<crate::api::auth::RateLimiter>)>,
+    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    // Extract identifier (IP or API key)
+    let identifier = headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+    
+    // Check rate limit
+    match rate_limiter.check_rate_limit(&identifier).await {
+        Ok(true) => next.run(request).await,
+        Ok(false) => {
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+                .header("retry-after", "60")
+                .body(axum::body::Body::from("Rate limit exceeded"))
+                .unwrap()
+        }
+        Err(_) => {
+            axum::response::Response::builder()
+                .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                .body(axum::body::Body::from("Internal server error"))
+                .unwrap()
+        }
+    }
 }
 
 async fn health_check(

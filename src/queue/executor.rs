@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{
     database::DatabaseManager,
     queue::scheduler::{ScheduledTask, TaskScheduler},
+    queue::tracker::TransactionTracker,
     types::{RelayerError, Result, TransactionRequest, TransactionStatus},
     wallet::pool::WalletPool,
     wallet::WalletInfo,
@@ -23,6 +24,7 @@ pub struct TaskExecutor {
     wallet_pool: Arc<WalletPool>,
     database: Arc<DatabaseManager>,
     ethereum_provider: Arc<RootProvider>,
+    transaction_tracker: Option<Arc<TransactionTracker>>,
     max_retries: u32,
     retry_delay: Duration,
 }
@@ -41,6 +43,7 @@ impl TaskExecutor {
         wallet_pool: Arc<WalletPool>,
         database: Arc<DatabaseManager>,
         ethereum_provider: Arc<RootProvider>,
+        transaction_tracker: Option<Arc<TransactionTracker>>,
         max_retries: u32,
         retry_delay: Duration,
     ) -> Self {
@@ -49,6 +52,7 @@ impl TaskExecutor {
             wallet_pool,
             database,
             ethereum_provider,
+            transaction_tracker,
             max_retries,
             retry_delay,
         }
@@ -92,6 +96,13 @@ impl TaskExecutor {
                     None, // error_message
                 ).await {
                     tracing::error!("Failed to update transaction status: {}", e);
+                }
+
+                // Add to transaction tracker for status monitoring
+                if let Some(ref tracker) = self.transaction_tracker {
+                    if let Err(e) = tracker.add_transaction(task_id, tx_hash.clone()).await {
+                        tracing::warn!("Failed to add transaction to tracker: {}", e);
+                    }
                 }
 
                 // Release wallet with success status

@@ -36,12 +36,8 @@ async fn main() -> Result<(), RelayerError> {
     // Create API state
     let api_state = service_manager.create_api_state();
 
-    // Create the router with middleware
-    let app = create_router(api_state)
-        .layer(middleware::from_fn(cors_middleware))
-        .layer(middleware::from_fn(logging_middleware))
-        .layer(middleware::from_fn(request_id_middleware))
-        .layer(middleware::from_fn(security_headers_middleware));
+    // Create the router (middleware is already applied in create_router)
+    let app = create_router(api_state);
 
     // Start the server
     let listener = TcpListener::bind(format!("{}:{}", config.server.host, config.server.port))
