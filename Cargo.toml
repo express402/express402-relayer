@@ -26,23 +26,59 @@ alloy = { version = "1.0.25", features = [
   "signer-local",
 ] }
 
-# tracing
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Database
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid"] }
+
+# Cache
+redis = { version = "0.24", features = ["tokio-comp"] }
+
+# Configuration
+config = "0.14"
+
+# Tracing and logging
 eyre = "0.6"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# async
-tokio = { version = "1.42", default-features = false }
+# Async runtime
+tokio = { version = "1.42", features = ["full"] }
 futures = "0.3"
 async-trait = "0.1"
 
-# misc
-arraydeque = "0.5"
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
 thiserror = "1.0"
+
+# Cryptography
+sha2 = "0.10"
+sha3 = "0.10"
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+hex = "0.4"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Random number generation
+rand = "0.8"
+
+# Misc utilities
+arraydeque = "0.5"
 rug = "1.24.1"
 itertools = "0.14.0"
 rayon = "1.11.0"
 async-stream = "0.3.6"
-serde = "1.0"
 
 
 [dev-dependencies]
