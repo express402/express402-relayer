@@ -1,0 +1,138 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: express402_relayer
+      POSTGRES_USER: relayer
+      POSTGRES_PASSWORD: relayer_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relayer -d express402_relayer"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Express402 Relayer Service
+  relayer:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Server Configuration
+      EXPRESS402_SERVER_HOST: "0.0.0.0"
+      EXPRESS402_SERVER_PORT: "8080"
+      EXPRESS402_SERVER_MAX_CONNECTIONS: "1000"
+      EXPRESS402_SERVER_REQUEST_TIMEOUT: "30"
+      EXPRESS402_SERVER_RATE_LIMIT_PER_MINUTE: "100"
+      
+      # Database Configuration
+      EXPRESS402_DATABASE_URL: "postgresql://relayer:relayer_password@postgres:5432/express402_relayer"
+      EXPRESS402_DATABASE_MAX_CONNECTIONS: "20"
+      EXPRESS402_DATABASE_MIN_CONNECTIONS: "5"
+      EXPRESS402_DATABASE_CONNECTION_TIMEOUT: "30"
+      EXPRESS402_DATABASE_IDLE_TIMEOUT: "600"
+      
+      # Redis Configuration
+      EXPRESS402_REDIS_URL: "redis://redis:6379"
+      EXPRESS402_REDIS_MAX_CONNECTIONS: "20"
+      EXPRESS402_REDIS_CONNECTION_TIMEOUT: "5"
+      EXPRESS402_REDIS_COMMAND_TIMEOUT: "3"
+      EXPRESS402_REDIS_KEY_PREFIX: "express402:"
+      
+      # Ethereum Configuration
+      EXPRESS402_ETHEREUM_RPC_URL: "https://eth-mainnet.g.alchemy.com/v2/your-api-key"
+      EXPRESS402_ETHEREUM_WS_URL: "wss://eth-mainnet.g.alchemy.com/v2/your-api-key"
+      EXPRESS402_ETHEREUM_CHAIN_ID: "1"
+      EXPRESS402_ETHEREUM_GAS_PRICE_MULTIPLIER: "1.1"
+      EXPRESS402_ETHEREUM_MAX_GAS_PRICE: "100000000000"
+      EXPRESS402_ETHEREUM_MIN_GAS_PRICE: "1000000000"
+      EXPRESS402_ETHEREUM_CONFIRMATION_BLOCKS: "1"
+      
+      # Wallet Configuration
+      EXPRESS402_WALLETS_PRIVATE_KEYS: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+      EXPRESS402_WALLETS_MIN_BALANCE: "1000000000000000000"
+      EXPRESS402_WALLETS_MAX_CONCURRENT_TRANSACTIONS: "5"
+      EXPRESS402_WALLETS_TRANSACTION_TIMEOUT: "60"
+      EXPRESS402_WALLETS_RETRY_ATTEMPTS: "3"
+      EXPRESS402_WALLETS_RETRY_DELAY: "5"
+      
+      # Security Configuration
+      EXPRESS402_SECURITY_SIGNATURE_TIMEOUT: "300"
+      EXPRESS402_SECURITY_NONCE_WINDOW: "3600"
+      EXPRESS402_SECURITY_MAX_PENDING_TRANSACTIONS: "1000"
+      EXPRESS402_SECURITY_ENABLE_REPLAY_PROTECTION: "true"
+      
+      # Queue Configuration
+      EXPRESS402_QUEUE_MAX_QUEUE_SIZE: "10000"
+      EXPRESS402_QUEUE_WORKER_THREADS: "4"
+      EXPRESS402_QUEUE_BATCH_SIZE: "10"
+      EXPRESS402_QUEUE_PROCESSING_TIMEOUT: "300"
+      
+      # Logging Configuration
+      EXPRESS402_LOG_LEVEL: "info"
+      EXPRESS402_ENVIRONMENT: "production"
+      
+      # RUST_LOG for tracing
+      RUST_LOG: "info,express402_relayer=debug"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Prometheus for metrics (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+  # Grafana for dashboards (optional)
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:
