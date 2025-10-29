@@ -160,6 +160,10 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/transactions/:id", get(get_transaction_status))
         .route("/users/:address/transactions", get(get_user_transactions))
         .route("/transactions/:id/cancel", post(cancel_transaction))
+        // Admin routes
+        .route("/admin/queue", get(get_queue_details))
+        .route("/admin/wallets", get(get_wallet_details))
+        .route("/admin/config", get(get_config_info))
         // Apply rate limiting middleware to all routes
         .layer(middleware::from_fn_with_state(
             (auth_manager.clone(), rate_limiter),
