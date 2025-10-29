@@ -83,8 +83,16 @@ impl ServiceManager {
             balance_threshold: alloy::primitives::U256::from(config.wallets.min_balance),
             rotation_interval: config.wallets.retry_delay,
             health_check_interval: 60, // 1 minute
+            max_concurrent_transactions: config.wallets.max_concurrent_transactions,
+            min_balance: config.wallets.min_balance,
+            transaction_timeout: config.wallets.transaction_timeout,
+            retry_attempts: config.wallets.retry_attempts,
+            retry_delay: config.wallets.retry_delay,
         };
         let wallet_pool = WalletPool::new(wallet_config);
+
+        // Load wallets from configuration
+        Self::load_wallets_from_config(&wallet_pool, &config.wallets).await?;
 
         // Initialize task scheduler
         let concurrency_limits = ConcurrencyLimits {
@@ -164,16 +172,77 @@ impl ServiceManager {
         })
     }
 
+    /// Load wallets from configuration into the wallet pool
+    async fn load_wallets_from_config(
+        wallet_pool: &WalletPool,
+        wallet_config: &crate::config::WalletConfig,
+    ) -> Result<()> {
+        use alloy::signers::k256::ecdsa::SigningKey;
+        use hex;
+
+        for private_key_str in &wallet_config.private_keys {
+            // Remove 0x prefix if present
+            let key_str = private_key_str.strip_prefix("0x").unwrap_or(private_key_str);
+            
+            // Parse private key
+            let key_bytes = hex::decode(key_str)
+                .map_err(|e| RelayerError::Internal(format!("Invalid private key format: {}", e)))?;
+            
+            if key_bytes.len() != 32 {
+                tracing::warn!("Invalid private key length: {}", key_bytes.len());
+                continue;
+            }
+
+            // Convert to SigningKey
+            let signing_key = SigningKey::from_bytes(key_bytes.as_slice().into())
+                .map_err(|e| RelayerError::Internal(format!("Invalid private key: {}", e)))?;
+
+            // Add to wallet pool
+            match wallet_pool.add_wallet(signing_key).await {
+                Ok(address) => {
+                    tracing::info!("Loaded wallet: {:?}", address);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to add wallet: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn start_background_tasks(&self) -> Result<()> {
         tracing::info!("Starting background tasks...");
+
+        // Start task execution loop
+        use crate::queue::executor::TaskExecutor;
+        use std::sync::Arc;
+        use tokio::time::Duration;
+
+        let task_executor = Arc::new(TaskExecutor::new(
+            Arc::new(self.task_scheduler.clone()),
+            Arc::new(self.wallet_pool.clone()),
+            Arc::new(self.database.clone()),
+            Arc::clone(&self.ethereum_provider),
+            3, // max_retries
+            Duration::from_secs(self.config.wallets.retry_delay),
+        ));
+
+        // Start execution loop in background
+        let executor_clone = Arc::clone(&task_executor);
+        tokio::spawn(async move {
+            if let Err(e) = executor_clone.start_execution_loop().await {
+                tracing::error!("Task execution loop failed: {}", e);
+            }
+        });
+        tracing::info!("Task execution loop started");
 
         // Start wallet balance monitoring if balance_checker is available
         if let Some(ref balance_checker) = self.balance_checker {
             use crate::wallet::monitor::WalletMonitor;
-            use tokio::time::Duration;
+            use tokio::sync::RwLock;
             
             // Get wallet addresses from wallet pool
-            // Note: This assumes WalletPool has a method to get wallet addresses
             // For now, we'll create an empty monitor and add wallets later
             let wallets = Arc::new(RwLock::new(vec![])); // Empty initially
             
