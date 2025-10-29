@@ -1,6 +1,87 @@
 [package]
 name = "express402-relayer"
-version = "0.1.0"
-edition = "2024"
+version = "0.0.1"
+edition = "2025"
+license = "MIT"
+description = "Express 402 (E402) is the first relayer middleware designed to optimize transaction throughput and reduce blockchain confirmation delays for #x402 protocol"
+readme = "README.md"
+homepage = "https://github.com/express402/express402-relayer"
+repository = "https://github.com/express402/express402-relayer"
+keywords = ["ethereum", "amm", "mev"]
+exclude = ["target/*", ".github/*", ".gitignore", "build.rs", "contracts/*"]
+
 
 [dependencies]
+# darkforest
+uniswap_v3_math = "0.6.2"
+
+# alloy
+alloy = { version = "1.0.25", features = [
+  "contract",
+  "network",
+  "rpc",
+  "rpc-types",
+  "provider-ws",
+  "rpc-types-eth",
+  "signer-local",
+] }
+
+# tracing
+eyre = "0.6"
+tracing = "0.1"
+
+# async
+tokio = { version = "1.42", default-features = false }
+futures = "0.3"
+async-trait = "0.1"
+
+# misc
+arraydeque = "0.5"
+thiserror = "1.0"
+rug = "1.24.1"
+itertools = "0.14.0"
+rayon = "1.11.0"
+async-stream = "0.3.6"
+serde = "1.0"
+
+
+[dev-dependencies]
+rand = "0.9.2"
+tracing-subscriber = "0.3"
+criterion = "0.7"
+tokio = { version = "1.42", default-features = false, features = [
+  "rt-multi-thread",
+] }
+alloy = { version = "1.0.25", features = ["rpc-client"] }
+alloy-provider = { version = "1.0.25", features = ["throttle"] }
+
+
+[build-dependencies]
+serde_json = "1.0"
+rayon = "1"
+
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = "full"
+
+
+[[bench]]
+name = "uniswap_v2"
+harness = false
+
+[[bench]]
+name = "uniswap_v3"
+harness = false
+
+[[bench]]
+name = "erc_4626"
+harness = false
