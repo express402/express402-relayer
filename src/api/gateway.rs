@@ -11,20 +11,23 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::types::{RelayerError, Result, TransactionRequest, TransactionStatus};
-use crate::cache::{persistence::DatabaseManager, CacheManager};
+use crate::database::DatabaseManager;
+use crate::cache::CacheManager;
 use crate::wallet::pool::WalletPool;
 use crate::queue::scheduler::TaskScheduler;
-use crate::security::signature::SignatureVerifier;
+use crate::security::{SignatureVerifier, ReplayProtection};
 use crate::config::Config;
+use crate::services::EthereumProvider;
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
     pub database_manager: Arc<DatabaseManager>,
     pub cache_manager: Arc<CacheManager<serde_json::Value>>,
-    pub ethereum_provider: Arc<alloy::providers::RootProvider<alloy::providers::fillers::JoinFill<alloy::providers::fillers::RecommendedFiller>>>,
+    pub ethereum_provider: Arc<EthereumProvider>,
     pub wallet_pool: Arc<WalletPool>,
     pub task_scheduler: Arc<TaskScheduler>,
     pub signature_verifier: Arc<SignatureVerifier>,
+    pub replay_protection: Arc<ReplayProtection>,
     pub config: Arc<Config>,
 }
 
@@ -138,72 +141,192 @@ pub fn create_router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-async fn health_check(State(state): State<ApiState>) -> Result<Json<HealthCheckResponse>> {
+async fn health_check(
+    State(state): State<ApiState>,
+) -> Result<Json<HealthCheckResponse>, (StatusCode, Json<serde_json::Value>)> {
     let mut services = HashMap::new();
-    
-    // Check wallet pool health
-    services.insert("wallet_pool".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        message: None,
-    });
-    
-    // Check queue health
-    services.insert("queue".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        message: None,
-    });
-    
-    // Check cache health
-    services.insert("cache".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        message: None,
-    });
-    
-    // Check database health
-    services.insert("database".to_string(), ServiceStatus {
-        status: "healthy".to_string(),
-        message: None,
-    });
+    let mut overall_status = "healthy".to_string();
 
-    Ok(Json(HealthCheckResponse {
-        status: "healthy".to_string(),
+    // Check database health
+    match state.database_manager.check_connection().await {
+        Ok(_) => {
+            services.insert("database".to_string(), ServiceStatus {
+                status: "healthy".to_string(),
+                message: Some("Database connection successful".to_string()),
+            });
+        }
+        Err(e) => {
+            overall_status = "unhealthy".to_string();
+            services.insert("database".to_string(), ServiceStatus {
+                status: "unhealthy".to_string(),
+                message: Some(format!("Database error: {}", e)),
+            });
+        }
+    }
+
+    // Check wallet pool health
+    match state.wallet_pool.get_pool_stats().await {
+        Ok(stats) => {
+            let status = if stats.healthy_wallets > 0 {
+                "healthy"
+            } else {
+                overall_status = "degraded".to_string();
+                "degraded"
+            };
+            services.insert("wallet_pool".to_string(), ServiceStatus {
+                status: status.to_string(),
+                message: Some(format!("Healthy wallets: {}/{}", stats.healthy_wallets, stats.total_wallets)),
+            });
+        }
+        Err(e) => {
+            overall_status = "degraded".to_string();
+            services.insert("wallet_pool".to_string(), ServiceStatus {
+                status: "unhealthy".to_string(),
+                message: Some(format!("Wallet pool error: {}", e)),
+            });
+        }
+    }
+
+    // Check queue health
+    match state.task_scheduler.get_queue_stats().await {
+        Ok(stats) => {
+            services.insert("queue".to_string(), ServiceStatus {
+                status: "healthy".to_string(),
+                message: Some(format!("Pending: {}, Processing: {}", stats.pending_tasks, stats.processing_tasks)),
+            });
+        }
+        Err(e) => {
+            overall_status = "degraded".to_string();
+            services.insert("queue".to_string(), ServiceStatus {
+                status: "unhealthy".to_string(),
+                message: Some(format!("Queue error: {}", e)),
+            });
+        }
+    }
+
+    // Check cache health
+    match state.cache_manager.get_stats().await {
+        Ok(_) => {
+            services.insert("cache".to_string(), ServiceStatus {
+                status: "healthy".to_string(),
+                message: Some("Cache system operational".to_string()),
+            });
+        }
+        Err(e) => {
+            // Cache failure is not critical, so we mark as degraded
+            if overall_status == "healthy" {
+                overall_status = "degraded".to_string();
+            }
+            services.insert("cache".to_string(), ServiceStatus {
+                status: "unhealthy".to_string(),
+                message: Some(format!("Cache error: {}", e)),
+            });
+        }
+    }
+
+    // Check Ethereum provider health
+    match state.ethereum_provider.get_chain_id().await {
+        Ok(chain_id) => {
+            services.insert("ethereum_provider".to_string(), ServiceStatus {
+                status: "healthy".to_string(),
+                message: Some(format!("Chain ID: {}", chain_id)),
+            });
+        }
+        Err(e) => {
+            overall_status = "degraded".to_string();
+            services.insert("ethereum_provider".to_string(), ServiceStatus {
+                status: "unhealthy".to_string(),
+                message: Some(format!("Provider error: {}", e)),
+            });
+        }
+    }
+
+    let status_code = match overall_status.as_str() {
+        "healthy" => StatusCode::OK,
+        "degraded" => StatusCode::OK,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+
+    Ok((status_code, Json(HealthCheckResponse {
+        status: overall_status,
         timestamp: chrono::Utc::now().to_rfc3339(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         services,
-    }))
+    })).1)
 }
 
-async fn get_stats(State(state): State<ApiState>) -> Result<Json<StatsResponse>> {
-    // This would gather stats from all services
-    // For now, return mock data
-    
+async fn get_stats(
+    State(state): State<ApiState>,
+) -> Result<Json<StatsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Get queue stats
+    let queue_stats = state.task_scheduler.get_queue_stats().await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to get queue stats: {}", e)
+            }))
+        ))?;
+
+    // Get wallet pool stats
+    let wallet_stats = state.wallet_pool.get_pool_stats().await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to get wallet stats: {}", e)
+            }))
+        ))?;
+
+    // Get cache stats
+    let cache_stats = state.cache_manager.get_stats().await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Failed to get cache stats: {}", e)
+            }))
+        ))?;
+
+    // Get transaction stats from database
+    let transaction_stats = match state.database_manager.get_transaction_stats().await {
+        Ok(db_stats) => TransactionStatsResponse {
+            total_transactions: db_stats.total_transactions,
+            pending_transactions: db_stats.pending_transactions,
+            confirmed_transactions: db_stats.confirmed_transactions,
+            failed_transactions: db_stats.failed_transactions,
+            average_gas_used: db_stats.avg_gas_used.and_then(|s| s.parse::<f64>().ok()),
+        },
+        Err(e) => {
+            tracing::warn!("Failed to get transaction stats: {}", e);
+            TransactionStatsResponse {
+                total_transactions: 0,
+                pending_transactions: 0,
+                confirmed_transactions: 0,
+                failed_transactions: 0,
+                average_gas_used: None,
+            }
+        }
+    };
+
     Ok(Json(StatsResponse {
         queue_stats: QueueStatsResponse {
-            pending_tasks: 0,
-            processing_tasks: 0,
-            completed_tasks: 0,
-            failed_tasks: 0,
-            available_permits: 10,
+            pending_tasks: queue_stats.pending_tasks,
+            processing_tasks: queue_stats.processing_tasks,
+            completed_tasks: queue_stats.completed_tasks,
+            failed_tasks: queue_stats.failed_tasks,
+            available_permits: queue_stats.available_permits,
         },
         wallet_stats: WalletStatsResponse {
-            total_wallets: 5,
-            active_wallets: 5,
-            healthy_wallets: 5,
-            total_transactions: 1000,
-            overall_success_rate: 0.95,
+            total_wallets: wallet_stats.total_wallets,
+            active_wallets: wallet_stats.active_wallets,
+            healthy_wallets: wallet_stats.healthy_wallets,
+            total_transactions: wallet_stats.total_transactions,
+            overall_success_rate: wallet_stats.overall_success_rate,
         },
         cache_stats: CacheStatsResponse {
-            memory_entries: 100,
-            redis_connected: true,
-            hit_rate: 0.85,
+            memory_entries: cache_stats.memory_stats.entry_count,
+            redis_connected: cache_stats.use_redis,
+            hit_rate: cache_stats.memory_stats.hit_rate,
         },
-        transaction_stats: TransactionStatsResponse {
-            total_transactions: 1000,
-            pending_transactions: 10,
-            confirmed_transactions: 950,
-            failed_transactions: 40,
-            average_gas_used: Some(21000.0),
-        },
+        transaction_stats,
     }))
 }
 
@@ -347,11 +470,139 @@ async fn submit_transaction(
         priority,
     );
 
+    // Verify transaction signature
+    tracing::debug!("Verifying transaction signature for address: {:?}", user_address);
+    let nonce_u64 = nonce.to::<u64>();
+    
+    // Clone signature verifier for mutable access
+    let mut verifier = (*state.signature_verifier).clone();
+    
+    match verifier.verify_transaction_signature(&transaction_request, nonce_u64) {
+        Ok(true) => {
+            tracing::info!("Signature verified successfully for transaction {}", transaction_request.id);
+        }
+        Ok(false) => {
+            tracing::warn!("Signature verification failed for transaction {}", transaction_request.id);
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "error": "Signature verification failed",
+                    "code": "INVALID_SIGNATURE"
+                })),
+            ));
+        }
+        Err(e) => {
+            tracing::error!("Signature verification error: {}", e);
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Signature verification error: {}", e),
+                    "code": "SIGNATURE_ERROR"
+                })),
+            ));
+        }
+    }
+
+    // Check replay protection
+    if state.config.security.enable_replay_protection {
+        tracing::debug!("Checking replay protection for address: {:?}, nonce: {}", user_address, nonce_u64);
+        match state.replay_protection.check_and_record(user_address, nonce_u64, None) {
+            Ok(_) => {
+                tracing::debug!("Replay protection check passed");
+            }
+            Err(e) => {
+                tracing::warn!("Replay attack detected: {}", e);
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!("Replay attack detected: {}", e),
+                        "code": "REPLAY_ATTACK"
+                    })),
+                ));
+            }
+        }
+    }
+
+    // Validate gas parameters
+    if max_fee_per_gas < max_priority_fee_per_gas {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "max_fee_per_gas must be >= max_priority_fee_per_gas",
+                "code": "INVALID_GAS_PARAMS"
+            })),
+        ));
+    }
+
+    // Check wallet pool availability
+    let wallet_stats = state.wallet_pool.get_pool_stats().await
+        .map_err(|e| (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": format!("Failed to check wallet pool: {}", e),
+                "code": "WALLET_POOL_ERROR"
+            })),
+        ))?;
+
+    if wallet_stats.healthy_wallets == 0 {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "No healthy wallets available",
+                "code": "WALLET_UNAVAILABLE"
+            })),
+        ));
+    }
+
+    // Check queue capacity
+    let queue_stats = state.task_scheduler.get_queue_stats().await
+        .map_err(|e| (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": format!("Failed to check queue: {}", e),
+                "code": "QUEUE_ERROR"
+            })),
+        ))?;
+
+    if queue_stats.available_permits == 0 {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "Transaction queue is full",
+                "code": "QUEUE_FULL"
+            })),
+        ));
+    }
+
     // Store transaction in database
-    state.database_manager.create_transaction(&transaction_request).await?;
+    tracing::info!("Storing transaction {} in database", transaction_request.id);
+    state.database_manager.create_transaction(&transaction_request).await
+        .map_err(|e| {
+            tracing::error!("Failed to store transaction in database: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to store transaction: {}", e),
+                    "code": "DATABASE_ERROR"
+                })),
+            )
+        })?;
 
     // Submit to task scheduler
-    let task_id = state.task_scheduler.schedule_task(transaction_request).await?;
+    tracing::info!("Submitting transaction {} to task scheduler", transaction_request.id);
+    let task_id = state.task_scheduler.schedule_task(transaction_request).await
+        .map_err(|e| {
+            tracing::error!("Failed to schedule task: {}", e);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": format!("Failed to schedule transaction: {}", e),
+                    "code": "SCHEDULER_ERROR"
+                })),
+            )
+        })?;
+
+    tracing::info!("Transaction {} submitted successfully with task ID {}", transaction_request.id, task_id);
 
     Ok(Json(SubmitTransactionResponse {
         transaction_id: task_id,
@@ -379,7 +630,7 @@ async fn get_transaction_status(
                 transaction_id: tx.id,
                 status: tx.status,
                 tx_hash: tx.tx_hash,
-                block_number: tx.block_number,
+                block_number: tx.block_number.map(|n| n as u64),
                 gas_used: tx.gas_used,
                 error_message: tx.error_message,
                 created_at: tx.created_at.to_rfc3339(),
@@ -402,6 +653,16 @@ async fn get_user_transactions(
     Path(address): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<UserTransactionsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    // Validate address format
+    let _user_address = address.parse::<alloy::primitives::Address>()
+        .map_err(|_| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid address format",
+                "code": "INVALID_ADDRESS"
+            })),
+        ))?;
+
     // Parse query parameters
     let page = params.get("page")
         .and_then(|p| p.parse::<u64>().ok())
@@ -427,7 +688,7 @@ async fn get_user_transactions(
             transaction_id: tx.id,
             status: tx.status,
             tx_hash: tx.tx_hash,
-            block_number: tx.block_number,
+            block_number: tx.block_number.map(|n| n as u64),
             gas_used: tx.gas_used,
             error_message: tx.error_message,
             created_at: tx.created_at.to_rfc3339(),
@@ -477,182 +738,15 @@ async fn cancel_transaction(
             "transaction_id": transaction_id,
             "status": "cancelled",
             "message": "Transaction cancelled successfully"
-    }
-}
-
-async fn health_check(
-    State(state): State<ApiState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut health_status = serde_json::json!({
-        "status": "healthy",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "services": {}
-    });
-
-    // Check database health
-    match state.database_manager.health_check().await {
-        Ok(_) => {
-            health_status["services"]["database"] = serde_json::json!({
-                "status": "healthy",
-                "message": "Database connection successful"
-            });
-        }
-        Err(e) => {
-            health_status["status"] = serde_json::json!("unhealthy");
-            health_status["services"]["database"] = serde_json::json!({
-                "status": "unhealthy",
-                "error": e.to_string()
-            });
-        }
-    }
-
-    // Check Redis health
-    match state.cache_manager.get_stats().await {
-        Ok(_) => {
-            health_status["services"]["cache"] = serde_json::json!({
-                "status": "healthy",
-                "message": "Cache system operational"
-            });
-        }
-        Err(e) => {
-            health_status["status"] = serde_json::json!("degraded");
-            health_status["services"]["cache"] = serde_json::json!({
-                "status": "unhealthy",
-                "error": e.to_string()
-            });
-        }
-    }
-
-    // Check wallet pool health
-    match state.wallet_pool.get_pool_stats().await {
-        Ok(stats) => {
-            health_status["services"]["wallet_pool"] = serde_json::json!({
-                "status": if stats.healthy_wallets > 0 { "healthy" } else { "degraded" },
-                "healthy_wallets": stats.healthy_wallets,
-                "total_wallets": stats.total_wallets,
-                "success_rate": stats.overall_success_rate
-            });
-        }
-        Err(e) => {
-            health_status["status"] = serde_json::json!("unhealthy");
-            health_status["services"]["wallet_pool"] = serde_json::json!({
-                "status": "unhealthy",
-                "error": e.to_string()
-            });
-        }
-    }
-
-    // Check task scheduler health
-    match state.task_scheduler.get_queue_stats().await {
-        Ok(stats) => {
-            health_status["services"]["task_scheduler"] = serde_json::json!({
-                "status": "healthy",
-                "pending_tasks": stats.pending_tasks,
-                "processing_tasks": stats.processing_tasks,
-                "available_permits": stats.available_permits
-            });
-        }
-        Err(e) => {
-            health_status["status"] = serde_json::json!("unhealthy");
-            health_status["services"]["task_scheduler"] = serde_json::json!({
-                "status": "unhealthy",
-                "error": e.to_string()
-            });
-        }
-    }
-
-    let status_code = if health_status["status"] == "healthy" {
-        StatusCode::OK
-    } else if health_status["status"] == "degraded" {
-        StatusCode::OK
+        })))
     } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-
-    Ok((status_code, Json(health_status)).1)
-}
-
-async fn get_stats(
-    State(state): State<ApiState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut stats = serde_json::json!({
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "system": {}
-    });
-
-    // Get database stats
-    match state.database_manager.get_transaction_stats().await {
-        Ok(db_stats) => {
-            stats["system"]["database"] = serde_json::json!({
-                "total_transactions": db_stats.total_transactions,
-                "pending_transactions": db_stats.pending_transactions,
-                "confirmed_transactions": db_stats.confirmed_transactions,
-                "failed_transactions": db_stats.failed_transactions,
-                "avg_gas_used": db_stats.avg_gas_used
-            });
-        }
-        Err(e) => {
-            stats["system"]["database"] = serde_json::json!({
-                "error": e.to_string()
-            });
-        }
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "Transaction not found or cannot be cancelled"
+            }))
+        ))
     }
-
-    // Get wallet pool stats
-    match state.wallet_pool.get_pool_stats().await {
-        Ok(wallet_stats) => {
-            stats["system"]["wallet_pool"] = serde_json::json!({
-                "total_wallets": wallet_stats.total_wallets,
-                "active_wallets": wallet_stats.active_wallets,
-                "healthy_wallets": wallet_stats.healthy_wallets,
-                "total_transactions": wallet_stats.total_transactions,
-                "overall_success_rate": wallet_stats.overall_success_rate,
-                "available_permits": wallet_stats.available_permits
-            });
-        }
-        Err(e) => {
-            stats["system"]["wallet_pool"] = serde_json::json!({
-                "error": e.to_string()
-            });
-        }
-    }
-
-    // Get queue stats
-    match state.task_scheduler.get_queue_stats().await {
-        Ok(queue_stats) => {
-            stats["system"]["queue"] = serde_json::json!({
-                "pending_tasks": queue_stats.pending_tasks,
-                "processing_tasks": queue_stats.processing_tasks,
-                "completed_tasks": queue_stats.completed_tasks,
-                "failed_tasks": queue_stats.failed_tasks,
-                "available_permits": queue_stats.available_permits,
-                "max_queue_size": queue_stats.max_queue_size
-            });
-        }
-        Err(e) => {
-            stats["system"]["queue"] = serde_json::json!({
-                "error": e.to_string()
-            });
-        }
-    }
-
-    // Get cache stats
-    match state.cache_manager.get_stats().await {
-        Ok(cache_stats) => {
-            stats["system"]["cache"] = serde_json::json!({
-                "memory_stats": cache_stats.memory_stats,
-                "use_redis": cache_stats.use_redis,
-                "redis_stats": cache_stats.redis_stats
-            });
-        }
-        Err(e) => {
-            stats["system"]["cache"] = serde_json::json!({
-                "error": e.to_string()
-            });
-        }
-    }
-
-    Ok(Json(stats))
 }
 
 #[cfg(test)]

@@ -108,16 +108,3 @@ opt-level = 3
 lto = true
 codegen-units = 1
 debug = "full"
-
-
-[[bench]]
-name = "uniswap_v2"
-harness = false
-
-[[bench]]
-name = "uniswap_v3"
-harness = false
-
-[[bench]]
-name = "erc_4626"
-harness = false

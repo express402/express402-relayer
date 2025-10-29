@@ -246,6 +246,15 @@ impl SignatureVerifier {
     }
 }
 
+impl Clone for SignatureVerifier {
+    fn clone(&self) -> Self {
+        Self {
+            domain: self.domain.clone(),
+            nonce_cache: self.nonce_cache.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

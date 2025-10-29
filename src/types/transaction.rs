@@ -23,6 +23,15 @@ impl Priority {
             Priority::Critical => 4,
         }
     }
+
+    pub fn to_string(&self) -> String {
+        match self {
+            Priority::Low => "low".to_string(),
+            Priority::Normal => "normal".to_string(),
+            Priority::High => "high".to_string(),
+            Priority::Critical => "critical".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
