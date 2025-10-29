@@ -1,0 +1,102 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Express402 Relayer Dashboard",
+    "tags": ["express402", "relayer"],
+    "style": "dark",
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Transaction Throughput",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(transactions_processed_total[5m])",
+            "legendFormat": "Transactions/sec"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "displayMode": "basic"
+            }
+          }
+        },
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Queue Status",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "queue_pending_tasks",
+            "legendFormat": "Pending Tasks"
+          },
+          {
+            "expr": "queue_processing_tasks",
+            "legendFormat": "Processing Tasks"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "Wallet Pool Health",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "wallet_pool_healthy_wallets",
+            "legendFormat": "Healthy Wallets"
+          },
+          {
+            "expr": "wallet_pool_total_wallets",
+            "legendFormat": "Total Wallets"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 8
+        }
+      },
+      {
+        "id": 4,
+        "title": "Error Rate",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "rate(transaction_errors_total[5m])",
+            "legendFormat": "Error Rate"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 8
+        }
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "5s"
+  }
+}
