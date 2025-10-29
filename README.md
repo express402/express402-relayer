@@ -152,40 +152,178 @@ pub struct Config {
 
 ### Environment Requirements
 
-- Rust 1.60+
+- Rust 1.75+
 - PostgreSQL 13+
 - Redis 6+
+- Docker & Docker Compose (optional)
 
-### Install Dependencies
+### Quick Start
 
 ```bash
-cargo build
+# Clone the repository
+git clone <repository-url>
+cd express402-relayer
+
+# Setup development environment
+make dev-setup
+
+# Start with Docker Compose (recommended)
+make docker-run
+
+# Or run manually
+make build
+make run
 ```
 
-### Run Tests
+### Development Setup
+
+1. **Configure Environment**
+   ```bash
+   cp config.development.env .env
+   # Edit .env with your configuration
+   ```
+
+2. **Start Services**
+   ```bash
+   # Using Docker Compose
+   make docker-run
+   
+   # Or manually start PostgreSQL and Redis, then:
+   make run
+   ```
+
+3. **Verify Installation**
+   ```bash
+   curl http://localhost:8080/health
+   ```
+
+### Available Commands
 
 ```bash
-cargo test
+make build      # Build the project
+make test       # Run tests
+make run        # Run the application
+make fmt        # Format code
+make clippy     # Run linter
+make clean      # Clean build artifacts
+make docs       # Generate documentation
+make docker-run # Start with Docker Compose
+make docker-stop # Stop Docker Compose
 ```
 
-### Run Application
+### API Usage
 
+Submit a transaction:
 ```bash
-cargo run
+curl -X POST http://localhost:8080/transactions \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
+  -d '{
+    "user_address": "0x1234567890123456789012345678901234567890",
+    "target_contract": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    "calldata": "0x1234",
+    "value": "0",
+    "gas_limit": "21000",
+    "max_fee_per_gas": "20000000000",
+    "max_priority_fee_per_gas": "2000000000",
+    "nonce": "0",
+    "signature_r": "0x1234",
+    "signature_s": "0x5678",
+    "signature_v": 27,
+    "priority": "normal"
+  }'
+```
+
+Check transaction status:
+```bash
+curl http://localhost:8080/transactions/{transaction-id}
+```
+
+Get system statistics:
+```bash
+curl http://localhost:8080/stats
 ```
 
 ## 🚀 Deployment and Operations
 
 ### Docker Deployment
-- Multi-stage build for optimized image size
-- Health checks and monitoring
-- Hot configuration reload
+
+The project includes comprehensive Docker support:
+
+```bash
+# Build Docker image
+make docker-build
+
+# Run with Docker Compose
+make docker-run
+
+# View logs
+make docker-logs
+
+# Stop services
+make docker-stop
+```
+
+**Services included:**
+- Express402 Relayer (port 8080)
+- PostgreSQL database (port 5432)
+- Redis cache (port 6379)
+- Prometheus metrics (port 9090)
+- Grafana dashboards (port 3000)
 
 ### Monitoring and Logging
-- Prometheus metrics collection
-- Grafana dashboards
-- Structured log output
-- Distributed tracing
+
+**Built-in Monitoring:**
+- Health check endpoint: `/health`
+- Metrics endpoint: `/metrics`
+- System statistics: `/stats`
+
+**External Monitoring:**
+- **Prometheus**: http://localhost:9090
+- **Grafana**: http://localhost:3000 (admin/admin)
+- **Health Dashboard**: Real-time system status
+- **Transaction Metrics**: Throughput, latency, error rates
+- **Wallet Pool Monitoring**: Health, balance, rotation stats
+
+**Logging:**
+- Structured JSON logging with tracing
+- Configurable log levels via environment variables
+- Request/response logging with correlation IDs
+- Error tracking and alerting
+
+### Production Deployment
+
+1. **Environment Configuration**
+   ```bash
+   cp config.example.env .env
+   # Configure production settings
+   ```
+
+2. **Database Setup**
+   ```bash
+   # Create production database
+   createdb express402_relayer_prod
+   
+   # Run migrations
+   make db-migrate
+   ```
+
+3. **Security Configuration**
+   - Use strong API keys
+   - Enable TLS/SSL
+   - Configure firewall rules
+   - Set up rate limiting
+
+4. **Monitoring Setup**
+   - Configure Prometheus scraping
+   - Set up Grafana dashboards
+   - Configure alerting rules
+   - Set up log aggregation
+
+5. **Load Balancing**
+   - Use multiple relayer instances
+   - Configure health checks
+   - Set up failover mechanisms
 
 ## ⚡ Performance Optimization Strategies
 
