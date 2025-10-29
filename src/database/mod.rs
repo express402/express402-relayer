@@ -7,6 +7,9 @@ use uuid::Uuid;
 
 use crate::types::{RelayerError, Result, Config, TransactionRequest, TransactionStatus};
 
+mod filters;
+pub use filters::TransactionFilters;
+
 pub struct DatabaseManager {
     pool: PgPool,
 }

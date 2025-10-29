@@ -19,6 +19,7 @@ use crate::security::{SignatureVerifier, ReplayProtection};
 use crate::config::Config;
 use crate::services::EthereumProvider;
 use crate::utils::gas::GasPriceOracle;
+use crate::utils::validation::TransactionValidator;
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -164,6 +165,8 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/admin/queue", get(get_queue_details))
         .route("/admin/wallets", get(get_wallet_details))
         .route("/admin/config", get(get_config_info))
+        // Search routes
+        .route("/transactions/search", get(search_transactions))
         // Apply rate limiting middleware to all routes
         .layer(middleware::from_fn_with_state(
             (auth_manager.clone(), rate_limiter),
@@ -582,131 +585,211 @@ async fn submit_transaction(
         ));
     }
 
-    // Parse and validate addresses
-    let user_address = payload.user_address.parse::<alloy::primitives::Address>()
-        .map_err(|_| (
+    // Use TransactionValidator for comprehensive validation
+    let user_address = TransactionValidator::validate_address_string(&payload.user_address)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid user_address format"
+                "error": e.to_string(),
+                "code": "INVALID_ADDRESS"
             })),
         ))?;
 
-    let target_contract = payload.target_contract.parse::<alloy::primitives::Address>()
-        .map_err(|_| (
+    let target_contract = TransactionValidator::validate_address_string(&payload.target_contract)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid target_contract format"
+                "error": e.to_string(),
+                "code": "INVALID_ADDRESS"
             })),
         ))?;
 
-    // Parse calldata
-    let calldata = if payload.calldata.starts_with("0x") {
-        hex::decode(&payload.calldata[2..])
-            .map_err(|_| (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Invalid calldata format"
-                })),
-            ))?
-    } else {
-        hex::decode(&payload.calldata)
-            .map_err(|_| (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "Invalid calldata format"
-                })),
-            ))?
-    };
-
-    // Parse numeric values
-    let value = payload.value.parse::<alloy::primitives::U256>()
-        .map_err(|_| (
+    // Validate addresses are not zero
+    TransactionValidator::validate_address(&user_address)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid value format"
+                "error": e.to_string(),
+                "code": "INVALID_ADDRESS"
             })),
         ))?;
 
-    let gas_limit = payload.gas_limit.parse::<alloy::primitives::U256>()
-        .map_err(|_| (
+    TransactionValidator::validate_address(&target_contract)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid gas_limit format"
+                "error": e.to_string(),
+                "code": "INVALID_ADDRESS"
             })),
         ))?;
 
-    let max_fee_per_gas = payload.max_fee_per_gas.parse::<alloy::primitives::U256>()
-        .map_err(|_| (
+    // Parse and validate calldata
+    let calldata_bytes = TransactionValidator::validate_calldata_string(&payload.calldata)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid max_fee_per_gas format"
+                "error": e.to_string(),
+                "code": "INVALID_CALLDATA"
+            })),
+        ))?;
+    let calldata = alloy::primitives::Bytes::from(calldata_bytes);
+
+    // Parse numeric values using validator
+    let value = TransactionValidator::parse_u256(&payload.value)
+        .map_err(|e| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": e.to_string(),
+                "code": "INVALID_VALUE"
+            })),
+        ))?;
+    TransactionValidator::validate_value(&value)
+        .map_err(|e| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": e.to_string(),
+                "code": "INVALID_VALUE"
             })),
         ))?;
 
-    let max_priority_fee_per_gas = payload.max_priority_fee_per_gas.parse::<alloy::primitives::U256>()
-        .map_err(|_| (
+    let gas_limit = TransactionValidator::parse_u256(&payload.gas_limit)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid max_priority_fee_per_gas format"
+                "error": e.to_string(),
+                "code": "INVALID_GAS_LIMIT"
+            })),
+        ))?;
+    TransactionValidator::validate_gas_limit(&gas_limit)
+        .map_err(|e| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": e.to_string(),
+                "code": "INVALID_GAS_LIMIT"
             })),
         ))?;
 
-    let nonce = payload.nonce.parse::<alloy::primitives::U256>()
-        .map_err(|_| (
+    let max_fee_per_gas = TransactionValidator::parse_u256(&payload.max_fee_per_gas)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid nonce format"
+                "error": e.to_string(),
+                "code": "INVALID_GAS_PRICE"
+            })),
+        ))?;
+
+    let max_priority_fee_per_gas = TransactionValidator::parse_u256(&payload.max_priority_fee_per_gas)
+        .map_err(|e| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": e.to_string(),
+                "code": "INVALID_GAS_PRICE"
+            })),
+        ))?;
+
+    // Validate gas prices
+    TransactionValidator::validate_gas_prices(&max_fee_per_gas, &max_priority_fee_per_gas)
+        .map_err(|e| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": e.to_string(),
+                "code": "INVALID_GAS_PRICE"
+            })),
+        ))?;
+
+    let nonce = TransactionValidator::parse_u256(&payload.nonce)
+        .map_err(|e| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": e.to_string(),
+                "code": "INVALID_NONCE"
+            })),
+        ))?;
+    TransactionValidator::validate_nonce(&nonce)
+        .map_err(|e| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": e.to_string(),
+                "code": "INVALID_NONCE"
             })),
         ))?;
 
     // Parse signature
-    let signature_r = payload.signature_r.parse::<alloy::primitives::U256>()
-        .map_err(|_| (
+    let signature_r = TransactionValidator::parse_u256(&payload.signature_r)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid signature_r format"
+                "error": e.to_string(),
+                "code": "INVALID_SIGNATURE"
             })),
         ))?;
 
-    let signature_s = payload.signature_s.parse::<alloy::primitives::U256>()
-        .map_err(|_| (
+    let signature_s = TransactionValidator::parse_u256(&payload.signature_s)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid signature_s format"
+                "error": e.to_string(),
+                "code": "INVALID_SIGNATURE"
             })),
         ))?;
 
-    // Parse priority
-    let priority = match payload.priority.as_str() {
-        "low" => crate::types::Priority::Low,
-        "normal" => crate::types::Priority::Normal,
-        "high" => crate::types::Priority::High,
-        "critical" => crate::types::Priority::Critical,
-        _ => return Err((
+    // Parse and validate priority
+    let priority = TransactionValidator::validate_priority(&payload.priority)
+        .map_err(|e| (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
-                "error": "Invalid priority. Must be one of: low, normal, high, critical"
+                "error": e.to_string(),
+                "code": "INVALID_PRIORITY"
             })),
-        )),
+        ))?;
+
+    // Validate signature structure
+    let signature = crate::types::Signature {
+        r: signature_r,
+        s: signature_s,
+        v: payload.signature_v,
     };
+    TransactionValidator::validate_signature(&signature)
+        .map_err(|e| (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": e.to_string(),
+                "code": "INVALID_SIGNATURE"
+            })),
+        ))?;
 
-    // Create transaction request
+    // Create transaction request (all validations already done)
     let transaction_request = TransactionRequest::new(
         user_address,
         target_contract,
-        alloy::primitives::Bytes::from(calldata),
+        calldata,
         value,
         gas_limit,
         max_fee_per_gas,
         max_priority_fee_per_gas,
         nonce,
-        crate::types::Signature {
-            r: signature_r,
-            s: signature_s,
-            v: payload.signature_v,
-        },
+        signature,
         priority,
     );
+
+    // Final comprehensive validation
+    TransactionValidator::validate_transaction_params(
+        &transaction_request.user_address,
+        &transaction_request.target_contract,
+        &transaction_request.calldata,
+        &transaction_request.value,
+        &transaction_request.gas_limit,
+        &transaction_request.max_fee_per_gas,
+        &transaction_request.max_priority_fee_per_gas,
+        &transaction_request.nonce,
+        &transaction_request.signature,
+    ).map_err(|e| (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": e.to_string(),
+            "code": "VALIDATION_FAILED"
+        })),
+    ))?;
 
     // Verify transaction signature
     tracing::debug!("Verifying transaction signature for address: {:?}", user_address);
@@ -761,16 +844,7 @@ async fn submit_transaction(
         }
     }
 
-    // Validate gas parameters
-    if max_fee_per_gas < max_priority_fee_per_gas {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "max_fee_per_gas must be >= max_priority_fee_per_gas",
-                "code": "INVALID_GAS_PARAMS"
-            })),
-        ));
-    }
+    // Gas prices are already validated by TransactionValidator
 
     // Check wallet pool availability
     let wallet_stats = state.wallet_pool.get_pool_stats().await
@@ -935,6 +1009,120 @@ async fn get_user_transactions(
     }).collect();
     
     Ok(Json(UserTransactionsResponse {
+        transactions: transaction_responses,
+        total,
+        page,
+        limit,
+    }))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SearchTransactionsResponse {
+    pub transactions: Vec<TransactionStatusResponse>,
+    pub total: u64,
+    pub page: u64,
+    pub limit: u64,
+}
+
+async fn search_transactions(
+    State(state): State<ApiState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<SearchTransactionsResponse>, (StatusCode, Json<serde_json::Value>)> {
+    use crate::database::TransactionFilters;
+
+    // Parse query parameters
+    let page = params.get("page")
+        .and_then(|p| p.parse::<u64>().ok())
+        .unwrap_or(1);
+    
+    let limit = params.get("limit")
+        .and_then(|l| l.parse::<u64>().ok())
+        .unwrap_or(20)
+        .min(100); // Cap at 100
+
+    // Build filters from query parameters
+    let mut filters = TransactionFilters::new();
+
+    if let Some(status) = params.get("status") {
+        filters = filters.with_status(status.clone());
+    }
+
+    if let Some(priority) = params.get("priority") {
+        filters = filters.with_priority(priority.clone());
+    }
+
+    if let Some(user_address) = params.get("user_address") {
+        // Validate address
+        TransactionValidator::validate_address_string(user_address)
+            .map_err(|e| (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": e.to_string(),
+                    "code": "INVALID_ADDRESS"
+                })),
+            ))?;
+        filters = filters.with_user_address(user_address.clone());
+    }
+
+    if let Some(target_contract) = params.get("target_contract") {
+        // Validate address
+        TransactionValidator::validate_address_string(target_contract)
+            .map_err(|e| (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": e.to_string(),
+                    "code": "INVALID_ADDRESS"
+                })),
+            ))?;
+        filters = filters.with_target_contract(target_contract.clone());
+    }
+
+    // Parse time range if provided
+    if let (Some(start_str), Some(end_str)) = (params.get("start_time"), params.get("end_time")) {
+        use crate::utils::time::TimeUtils;
+        let start = TimeUtils::parse_rfc3339(start_str)
+            .map_err(|e| (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Invalid start_time format: {}", e),
+                    "code": "INVALID_TIME"
+                })),
+            ))?;
+        let end = TimeUtils::parse_rfc3339(end_str)
+            .map_err(|e| (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Invalid end_time format: {}", e),
+                    "code": "INVALID_TIME"
+                })),
+            ))?;
+        filters = filters.with_time_range(start, end);
+    }
+
+    // Search transactions
+    let (transactions, total) = state.database_manager.search_transactions(&filters, page, limit).await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("Database error: {}", e)
+            }))
+        ))?;
+
+    // Convert to response format
+    let transaction_responses: Vec<TransactionStatusResponse> = transactions.into_iter().map(|tx| {
+        TransactionStatusResponse {
+            transaction_id: tx.id,
+            status: tx.status,
+            tx_hash: tx.tx_hash,
+            block_number: tx.block_number.map(|n| n as u64),
+            gas_used: tx.gas_used,
+            error_message: tx.error_message,
+            created_at: tx.created_at.to_rfc3339(),
+            updated_at: tx.updated_at.to_rfc3339(),
+        }
+    }).collect();
+
+    Ok(Json(SearchTransactionsResponse {
         transactions: transaction_responses,
         total,
         page,
