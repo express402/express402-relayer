@@ -129,7 +129,7 @@ where
             address,
             is_healthy,
             balance,
-            nonce,
+            nonce: alloy::primitives::U256::from(nonce),
             last_checked: Utc::now(),
             issues,
         })
@@ -137,7 +137,7 @@ where
 
     pub async fn get_wallet_balance(&self, address: Address) -> Result<U256> {
         let balance = self.provider
-            .get_balance(address, alloy::rpc::types::BlockId::latest())
+            .get_balance(address)
             .await
             .map_err(|e| RelayerError::Ethereum(e.to_string()))?;
 
@@ -146,7 +146,7 @@ where
 
     pub async fn get_wallet_nonce(&self, address: Address) -> Result<u64> {
         let nonce = self.provider
-            .get_transaction_count(address, alloy::rpc::types::BlockId::latest())
+            .get_transaction_count(address)
             .await
             .map_err(|e| RelayerError::Ethereum(e.to_string()))?;
 

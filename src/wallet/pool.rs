@@ -1,6 +1,6 @@
 use alloy::{
     primitives::Address,
-    signers::{k256::ecdsa::SigningKey, LocalWallet},
+    signers::k256::ecdsa::SigningKey,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use tokio::time::{Duration, Instant};
 
 use crate::types::{RelayerError, Result, WalletInfo, WalletPoolConfig};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WalletPool {
     wallets: Arc<RwLock<Vec<WalletInfo>>>,
     active_wallets: Arc<RwLock<Vec<Address>>>,
@@ -55,10 +55,10 @@ impl WalletPool {
     }
 
     pub async fn add_wallet(&self, private_key: SigningKey) -> Result<Address> {
-        let wallet = LocalWallet::from(private_key);
-        let address = wallet.address();
+        let verifying_key = private_key.verifying_key();
+        let address = Address::from_word(alloy::primitives::keccak256(&verifying_key.to_sec1_bytes()[1..])[12..].try_into().unwrap());
         
-        let wallet_info = WalletInfo::new(address, wallet.signer());
+        let wallet_info = WalletInfo::new(address, private_key);
         
         {
             let mut wallets = self.wallets.write().await;
