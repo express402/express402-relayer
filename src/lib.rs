@@ -12,7 +12,7 @@ pub mod api;
 // pub mod wallet;
 // pub mod queue;
 // pub mod cache;
-// pub mod database;
+// pub mod database;  // Disabled until we set up offline sqlx or use runtime queries
 // pub mod services;
 
 pub use types::*;

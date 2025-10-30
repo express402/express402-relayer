@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::types::{RelayerError, Result, Config, TransactionRequest, TransactionStatus};
+use crate::types::{RelayerError, Result, TransactionRequest, TransactionStatus};
+use crate::config::Config;
 
 mod filters;
 pub use filters::TransactionFilters;
@@ -46,8 +47,7 @@ impl DatabaseManager {
             .acquire_timeout(Duration::from_secs(config.database.connection_timeout))
             .idle_timeout(Duration::from_secs(config.database.idle_timeout))
             .connect(&config.database.url)
-            .await
-            .map_err(|e| RelayerError::Database(e))?;
+            .await?;
 
         Ok(Self { pool })
     }
@@ -62,13 +62,11 @@ impl DatabaseManager {
 
         for migration_file in migration_files {
             let migration_sql = fs::read_to_string(migration_file)
-                .await
-                .map_err(|e| RelayerError::Io(e))?;
+                .await?;
 
             sqlx::query(&migration_sql)
                 .execute(&self.pool)
-                .await
-                .map_err(|e| RelayerError::Database(e))?;
+                .await?;
 
             tracing::info!("Applied migration: {}", migration_file);
         }
@@ -80,8 +78,7 @@ impl DatabaseManager {
     pub async fn check_connection(&self) -> Result<()> {
         sqlx::query("SELECT 1")
             .fetch_one(&self.pool)
-            .await
-            .map_err(|e| RelayerError::Database(e))?;
+            .await?;
         
         Ok(())
     }
@@ -98,17 +95,19 @@ impl DatabaseManager {
         let transaction_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM transactions")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| RelayerError::Database(e))?;
+            ?;
 
         let wallet_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM wallets")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| RelayerError::Database(e))?;
+            ?;
 
+        let connection_count_u32 = connection_count as u32;
+        let idle_connections_u32 = idle_connections as u32;
         Ok(DatabaseStats {
-            connection_count,
-            idle_connections,
-            active_connections: connection_count - idle_connections,
+            connection_count: connection_count_u32,
+            idle_connections: idle_connections_u32,
+            active_connections: connection_count_u32.saturating_sub(idle_connections_u32),
             transaction_count: transaction_count.0 as u64,
             wallet_count: wallet_count.0 as u64,
         })
@@ -146,10 +145,10 @@ impl DatabaseManager {
         )
         .execute(&self.pool)
         .await
-        .map_err(|e| RelayerError::Database(e))?;
+        ?;
 
         if result.rows_affected() == 0 {
-            return Err(RelayerError::Database(sqlx::Error::RowNotFound));
+            return Err(RelayerError::Database("No rows affected".to_string()));
         }
 
         Ok(request.id)
@@ -165,7 +164,7 @@ impl DatabaseManager {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| RelayerError::Database(e))?;
+        ?;
 
         Ok(record)
     }
@@ -196,7 +195,7 @@ impl DatabaseManager {
         )
         .execute(&self.pool)
         .await
-        .map_err(|e| RelayerError::Database(e))?;
+        ?;
 
         Ok(())
     }
@@ -223,7 +222,7 @@ impl DatabaseManager {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| RelayerError::Database(e))?;
+        ?;
 
         let total = sqlx::query!(
             r#"
@@ -233,7 +232,7 @@ impl DatabaseManager {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| RelayerError::Database(e))?
+        ?
         .count
         .unwrap_or(0) as u64;
 
@@ -283,7 +282,7 @@ impl DatabaseManager {
                 )
                 .fetch_all(&self.pool)
                 .await
-                .map_err(|e| RelayerError::Database(e))?;
+                ?;
 
                 let total = sqlx::query!(
                     r#"
@@ -295,7 +294,7 @@ impl DatabaseManager {
                 )
                 .fetch_one(&self.pool)
                 .await
-                .map_err(|e| RelayerError::Database(e))?
+                ?
                 .count
                 .unwrap_or(0) as u64;
 
@@ -316,7 +315,7 @@ impl DatabaseManager {
                 )
                 .fetch_all(&self.pool)
                 .await
-                .map_err(|e| RelayerError::Database(e))?;
+                ?;
 
                 let total = sqlx::query!(
                     r#"
@@ -326,7 +325,7 @@ impl DatabaseManager {
                 )
                 .fetch_one(&self.pool)
                 .await
-                .map_err(|e| RelayerError::Database(e))?
+                ?
                 .count
                 .unwrap_or(0) as u64;
 
@@ -347,7 +346,7 @@ impl DatabaseManager {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| RelayerError::Database(e))?;
+        ?;
 
         let total = sqlx::query!(
             r#"
@@ -356,7 +355,7 @@ impl DatabaseManager {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| RelayerError::Database(e))?
+        ?
         .count
         .unwrap_or(0) as u64;
 
@@ -378,7 +377,7 @@ impl DatabaseManager {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| RelayerError::Database(e))?;
+        ?;
 
         Ok(TransactionStats {
             total_transactions: stats.total_transactions.unwrap_or(0) as u64,
