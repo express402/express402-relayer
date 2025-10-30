@@ -325,33 +325,45 @@ async fn health_check(
 
 async fn get_stats(
     State(state): State<ApiState>,
-) -> Result<Json<StatsResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> impl IntoResponse {
     // Get queue stats
-    let queue_stats = state.task_scheduler.get_queue_stats().await
-        .map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to get queue stats: {}", e)
-            }))
-        ))?;
+    let queue_stats = match state.task_scheduler.get_queue_stats().await {
+        Ok(stats) => stats,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to get queue stats: {}", e)
+                }))
+            ).into_response();
+        }
+    };
 
     // Get wallet pool stats
-    let wallet_stats = state.wallet_pool.get_pool_stats().await
-        .map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to get wallet stats: {}", e)
-            }))
-        ))?;
+    let wallet_stats = match state.wallet_pool.get_pool_stats().await {
+        Ok(stats) => stats,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to get wallet stats: {}", e)
+                }))
+            ).into_response();
+        }
+    };
 
     // Get cache stats
-    let cache_stats = state.cache_manager.get_stats().await
-        .map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": format!("Failed to get cache stats: {}", e)
-            }))
-        ))?;
+    let cache_stats = match state.cache_manager.get_stats().await {
+        Ok(stats) => stats,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("Failed to get cache stats: {}", e)
+                }))
+            ).into_response();
+        }
+    };
 
     // Get transaction stats from database
     let transaction_stats = match state.database_manager.get_transaction_stats().await {
@@ -374,7 +386,7 @@ async fn get_stats(
         }
     };
 
-    Ok(Json(StatsResponse {
+    Json(StatsResponse {
         queue_stats: QueueStatsResponse {
             pending_tasks: queue_stats.pending_tasks,
             processing_tasks: queue_stats.processing_tasks,
@@ -395,7 +407,7 @@ async fn get_stats(
             hit_rate: cache_stats.memory_stats.hit_rate,
         },
         transaction_stats,
-    }))
+    }).into_response()
 }
 
 // Detailed metrics endpoint

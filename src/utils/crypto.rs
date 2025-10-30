@@ -4,6 +4,7 @@ use alloy::{
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use rand::Rng;
 
 use crate::types::{RelayerError, Result};
 
@@ -18,7 +19,10 @@ impl CryptoUtils {
     /// Generate a new random address
     pub fn generate_address() -> Address {
         let private_key = Self::generate_private_key();
-        Address::from(private_key.verifying_key())
+        let public_key = private_key.verifying_key();
+        let public_key_bytes = public_key.to_sec1_bytes();
+        let hash = Self::keccak256(&public_key_bytes[1..]); // Skip the first byte (0x04)
+        Address::from_slice(&hash[12..]) // Take last 20 bytes
     }
 
     /// Convert a hex string to U256
@@ -93,6 +97,7 @@ impl CryptoUtils {
 
     /// Sign a message with a private key
     pub fn sign_message(private_key: &SigningKey, message: &[u8]) -> Result<Signature> {
+        use alloy::signers::k256::ecdsa::signature::hazmat::PrehashSigner;
         let message_hash = Self::keccak256(message);
         private_key.sign_prehash(&message_hash)
             .map_err(|e| RelayerError::Internal(format!("Signing failed: {}", e)))
@@ -101,7 +106,8 @@ impl CryptoUtils {
     /// Verify a signature
     pub fn verify_signature(signature: &Signature, message: &[u8], address: Address) -> Result<bool> {
         let message_hash = Self::keccak256(message);
-        let recovered_address = signature.recover_address_from_prehash(&message_hash)
+        let message_hash_fixed = alloy::primitives::FixedBytes::<32>::from(message_hash);
+        let recovered_address = signature.recover_address_from_prehash(&message_hash_fixed)
             .map_err(|e| RelayerError::Internal(format!("Recovery failed: {}", e)))?;
 
         Ok(recovered_address == address)
@@ -124,8 +130,7 @@ impl CryptoUtils {
         use pbkdf2::{pbkdf2_hmac, Sha256};
         
         let mut key = [0u8; 32];
-        pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, iterations, &mut key)
-            .map_err(|e| RelayerError::Internal(format!("Key derivation failed: {}", e)))?;
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, iterations, &mut key);
 
         Ok(key)
     }
@@ -133,7 +138,7 @@ impl CryptoUtils {
     /// Encrypt data using AES-256-GCM
     pub fn encrypt_aes_gcm(data: &[u8], key: &[u8; 32], nonce: &[u8; 12]) -> Result<Vec<u8>> {
         use aes_gcm::{Aes256Gcm, Key, Nonce};
-        use aes_gcm::aead::{Aead, NewAead};
+        use aes_gcm::aead::{Aead, KeyInit};
 
         let cipher = Aes256Gcm::new(Key::from_slice(key));
         cipher.encrypt(Nonce::from_slice(nonce), data)
@@ -143,7 +148,7 @@ impl CryptoUtils {
     /// Decrypt data using AES-256-GCM
     pub fn decrypt_aes_gcm(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 12]) -> Result<Vec<u8>> {
         use aes_gcm::{Aes256Gcm, Key, Nonce};
-        use aes_gcm::aead::{Aead, NewAead};
+        use aes_gcm::aead::{Aead, KeyInit};
 
         let cipher = Aes256Gcm::new(Key::from_slice(key));
         cipher.decrypt(Nonce::from_slice(nonce), ciphertext)

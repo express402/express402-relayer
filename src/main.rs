@@ -1,5 +1,5 @@
 use express402_relayer::{
-    api::{create_router, ApiState},
+    api::gateway_simple,
     config::Config,
     services::ServiceManager,
     types::RelayerError,
@@ -34,17 +34,8 @@ async fn main() -> Result<(), RelayerError> {
 
     info!("Configuration loaded and validated successfully");
 
-    // Initialize services
-    let service_manager = Arc::new(ServiceManager::new(config.clone()).await?);
-    
-    // Start background tasks
-    service_manager.start_background_tasks().await?;
-    
-    // Create API state
-    let api_state = service_manager.create_api_state();
-
-    // Create the router (middleware is already applied in create_router)
-    let app = create_router(api_state);
+    // For now, use simplified router without services
+    let app = gateway_simple::create_router();
 
     // Start the server
     let listener = TcpListener::bind(format!("{}:{}", config.server.host, config.server.port))
@@ -67,8 +58,7 @@ async fn main() -> Result<(), RelayerError> {
         .await
         .map_err(|e| RelayerError::Internal(e.to_string()))?;
 
-    // Shutdown services
-    service_manager.shutdown().await?;
+    // Services shutdown not needed for simplified version
 
     info!("Server shutdown completed");
     Ok(())
