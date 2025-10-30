@@ -7,7 +7,7 @@ use tokio::time::{Duration, Instant};
 
 use crate::types::{RelayerError, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RedisCache {
     client: Client,
     connection: Arc<RwLock<Option<Connection>>>,
@@ -52,8 +52,7 @@ impl<T> CacheEntry<T> {
 
 impl RedisCache {
     pub fn new(url: &str, key_prefix: String, default_ttl: Duration) -> Result<Self> {
-        let client = Client::open(url)
-            .map_err(|e| RelayerError::Redis(e))?;
+        let client = Client::open(url)?;
 
         Ok(Self {
             client,
@@ -64,8 +63,7 @@ impl RedisCache {
     }
 
     pub async fn connect(&self) -> Result<()> {
-        let connection = self.client.get_connection()
-            .map_err(|e| RelayerError::Redis(e))?;
+        let connection = self.client.get_connection()?;
 
         let mut conn = self.connection.write().await;
         *conn = Some(connection);
@@ -86,15 +84,13 @@ impl RedisCache {
 
         match result {
             Ok(data) => {
-                let value: T = serde_json::from_str(&data)
-                    .map_err(|e| RelayerError::Serialization(e))?;
+                let value: T = serde_json::from_str(&data)?;
                 Ok(Some(value))
             }
-            Err(redis::RedisError { kind: redis::ErrorKind::TypeError, .. }) => {
-                // Key not found
+            Err(_) => {
+                // Key not found or other error
                 Ok(None)
             }
-            Err(e) => Err(RelayerError::Redis(e)),
         }
     }
 
@@ -107,8 +103,7 @@ impl RedisCache {
             .ok_or_else(|| RelayerError::Cache("Not connected to Redis".to_string()))?;
 
         let full_key = format!("{}{}", self.key_prefix, key);
-        let data = serde_json::to_string(value)
-            .map_err(|e| RelayerError::Serialization(e))?;
+        let data = serde_json::to_string(value)?;
 
         let ttl_seconds = ttl.unwrap_or(self.default_ttl).as_secs() as i64;
 
@@ -131,7 +126,7 @@ impl RedisCache {
 
         match result {
             Ok(count) => Ok(count > 0),
-            Err(e) => Err(RelayerError::Redis(e)),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -145,7 +140,7 @@ impl RedisCache {
 
         match result {
             Ok(count) => Ok(count > 0),
-            Err(e) => Err(RelayerError::Redis(e)),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -162,7 +157,7 @@ impl RedisCache {
 
         match result {
             Ok(count) => Ok(count > 0),
-            Err(e) => Err(RelayerError::Redis(e)),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -184,7 +179,7 @@ impl RedisCache {
                     Ok(Some(Duration::from_secs(ttl as u64)))
                 }
             }
-            Err(e) => Err(RelayerError::Redis(e)),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -218,7 +213,7 @@ impl RedisCache {
                 }
                 Ok(map)
             }
-            Err(e) => Err(RelayerError::Redis(e)),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -262,13 +257,13 @@ impl RedisCache {
                     let result: RedisResult<i32> = redis::cmd("DEL").arg(&keys).query(conn);
                     match result {
                         Ok(count) => Ok(count as usize),
-                        Err(e) => Err(RelayerError::Redis(e)),
+                        Err(e) => Err(e.into()),
                     }
                 } else {
                     Ok(0)
                 }
             }
-            Err(e) => Err(RelayerError::Redis(e)),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -308,7 +303,7 @@ impl RedisCache {
 
                 Ok(stats)
             }
-            Err(e) => Err(RelayerError::Redis(e)),
+            Err(e) => Err(e.into()),
         }
     }
 

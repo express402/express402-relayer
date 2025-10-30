@@ -6,7 +6,7 @@ use tokio::time::{Duration, Instant};
 
 use crate::types::{RelayerError, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MemoryCache<T> {
     data: Arc<RwLock<HashMap<String, CacheEntry<T>>>>,
     max_size: usize,

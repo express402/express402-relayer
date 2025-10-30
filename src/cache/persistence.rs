@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::types::{RelayerError, Result, TransactionRequest, TransactionStatus, Priority};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DatabaseManager {
     pool: PgPool,
 }
