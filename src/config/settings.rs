@@ -199,21 +199,21 @@ pub struct ValidationError {
 }
 
 impl Config {
-    pub fn from_env() -> Result<Self, config::ConfigError> {
+    pub fn from_env() -> Result<Self> {
         let mut settings = config::Config::builder()
             .add_source(config::Environment::with_prefix("EXPRESS402"))
             .build()?;
 
-        settings.try_deserialize()
+        settings.try_deserialize().map_err(|e| RelayerError::Config(e.to_string()))
     }
 
-    pub fn from_file(path: &str) -> Result<Self, config::ConfigError> {
+    pub fn from_file(path: &str) -> Result<Self> {
         let mut settings = config::Config::builder()
             .add_source(config::File::with_name(path))
             .add_source(config::Environment::with_prefix("EXPRESS402"))
             .build()?;
 
-        settings.try_deserialize()
+        settings.try_deserialize().map_err(|e| RelayerError::Config(e.to_string()))
     }
 
     pub fn is_production(&self) -> bool {

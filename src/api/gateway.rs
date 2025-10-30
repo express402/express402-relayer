@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::Json,
+    response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
@@ -211,7 +211,7 @@ async fn rate_limit_middleware(
 
 async fn health_check(
     State(state): State<ApiState>,
-) -> Result<Json<HealthCheckResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> impl IntoResponse {
     let mut services = HashMap::new();
     let mut overall_status = "healthy".to_string();
 
@@ -315,12 +315,12 @@ async fn health_check(
         _ => StatusCode::SERVICE_UNAVAILABLE,
     };
 
-    Ok((status_code, Json(HealthCheckResponse {
+    (status_code, Json(HealthCheckResponse {
         status: overall_status,
         timestamp: chrono::Utc::now().to_rfc3339(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         services,
-    })).1)
+    }))
 }
 
 async fn get_stats(

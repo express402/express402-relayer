@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum RelayerError {
     #[error("Configuration error: {0}")]
     Config(String),
@@ -49,6 +49,21 @@ pub enum RelayerError {
 
     #[error("Timeout error: {0}")]
     Timeout(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
+}
+
+impl From<String> for RelayerError {
+    fn from(s: String) -> Self {
+        RelayerError::Internal(s)
+    }
+}
+
+impl From<config::ConfigError> for RelayerError {
+    fn from(e: config::ConfigError) -> Self {
+        RelayerError::Config(e.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, RelayerError>;
