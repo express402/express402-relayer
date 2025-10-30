@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant};
 
 use crate::types::{RelayerError, Result};
+use super::redis::{RedisCache, RedisCacheStats};
 
 #[derive(Debug)]
 pub struct MemoryCache<T> {
@@ -338,7 +339,7 @@ where
         // Try Redis cache if available
         if self.use_redis {
             if let Some(ref redis_cache) = self.redis_cache {
-                if let Some(value) = redis_cache.get(key).await? {
+                if let Some(value) = redis_cache.get::<T>(key).await? {
                     // Store in memory cache for faster access
                     self.memory_cache.set(key.to_string(), value.clone(), None).await?;
                     return Ok(Some(value));

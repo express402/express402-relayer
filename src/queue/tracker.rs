@@ -11,14 +11,14 @@ use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::{
-    database::DatabaseManager,
+    // database::DatabaseManager,  // Temporarily disabled
     types::{RelayerError, Result, TransactionStatus},
 };
 
 #[derive(Debug, Clone)]
 pub struct TransactionTracker {
-    database: Arc<DatabaseManager>,
-    ethereum_provider: Arc<RootProvider>,
+    // database: Arc<DatabaseManager>,  // Temporarily disabled
+    ethereum_provider: Arc<RootProvider<alloy::transports::http::Http<alloy::transports::http::reqwest::Client>>>,
     pending_transactions: Arc<RwLock<HashMap<String, PendingTransaction>>>,
     check_interval: Duration,
     confirmation_blocks: u64,

@@ -60,7 +60,7 @@ impl DatabaseManager {
     pub async fn new(database_url: &str) -> Result<Self> {
         let pool = PgPool::connect(database_url)
             .await
-            .map_err(|e| RelayerError::Database(e))?;
+            .map_err(|e| RelayerError::Database(e.to_string()))?;
 
         Ok(Self { pool })
     }
@@ -69,7 +69,7 @@ impl DatabaseManager {
         sqlx::migrate!("./migrations")
             .run(&self.pool)
             .await
-            .map_err(|e| RelayerError::Database(e))?;
+            .map_err(|e| RelayerError::Database(e.to_string()))?;
 
         Ok(())
     }
@@ -109,7 +109,7 @@ impl DatabaseManager {
         .map_err(|e| RelayerError::Database(e))?;
 
         if result.rows_affected() == 0 {
-            return Err(RelayerError::Database(sqlx::Error::RowNotFound));
+            return Err(RelayerError::Database("No rows affected".to_string()));
         }
 
         Ok(request.id)
@@ -253,7 +253,7 @@ impl DatabaseManager {
         .map_err(|e| RelayerError::Database(e))?;
 
         if result.rows_affected() == 0 {
-            return Err(RelayerError::Database(sqlx::Error::RowNotFound));
+            return Err(RelayerError::Database("No rows affected".to_string()));
         }
 
         Ok(wallet.id)

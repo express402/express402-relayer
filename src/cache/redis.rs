@@ -206,7 +206,7 @@ impl RedisCache {
                     if let Some(key) = keys.get(i) {
                         if !value.is_empty() {
                             let deserialized: T = serde_json::from_str(&value)
-                                .map_err(|e| RelayerError::Serialization(e))?;
+                                .map_err(|e| RelayerError::Serialization(e.to_string()))?;
                             map.insert(key.clone(), deserialized);
                         }
                     }
@@ -230,10 +230,10 @@ impl RedisCache {
         for (key, value) in items {
             let full_key = format!("{}{}", self.key_prefix, key);
             let data = serde_json::to_string(&value)
-                .map_err(|e| RelayerError::Serialization(e))?;
+                .map_err(|e| RelayerError::Serialization(e.to_string()))?;
 
             if let Some(ttl) = ttl {
-                pipe.setex(&full_key, ttl.as_secs() as i64, &data);
+                pipe.cmd("SETEX").arg(&full_key).arg(ttl.as_secs() as i64).arg(&data);
             } else {
                 pipe.set(&full_key, &data);
             }

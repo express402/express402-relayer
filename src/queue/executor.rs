@@ -10,23 +10,23 @@ use tokio::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::{
-    database::DatabaseManager,
+    // database::DatabaseManager,  // Temporarily disabled
     queue::scheduler::{ScheduledTask, TaskScheduler},
     queue::tracker::TransactionTracker,
     types::{RelayerError, Result, TransactionRequest, TransactionStatus},
     wallet::pool::WalletPool,
-    wallet::WalletInfo,
-    utils::gas::GasPriceOracle,
+    // wallet::WalletInfo,  // Temporarily disabled
+    // utils::gas::GasPriceOracle,  // Temporarily disabled
 };
 
 #[derive(Debug, Clone)]
 pub struct TaskExecutor {
     task_scheduler: Arc<TaskScheduler>,
     wallet_pool: Arc<WalletPool>,
-    database: Arc<DatabaseManager>,
-    ethereum_provider: Arc<RootProvider>,
+    // database: Arc<DatabaseManager>,  // Temporarily disabled
+    ethereum_provider: Arc<RootProvider<alloy::transports::http::Http<alloy::transports::http::reqwest::Client>>>,
     transaction_tracker: Option<Arc<TransactionTracker>>,
-    gas_price_oracle: Option<Arc<GasPriceOracle>>,
+    // gas_price_oracle: Option<Arc<GasPriceOracle>>,  // Temporarily disabled
     max_retries: u32,
     retry_delay: Duration,
 }

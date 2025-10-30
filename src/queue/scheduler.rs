@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::types::{RelayerError, Result, TransactionRequest, Priority};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TaskScheduler {
     priority_queue: Arc<RwLock<BinaryHeap<ScheduledTask>>>,
     processing_queue: Arc<RwLock<VecDeque<ScheduledTask>>>,
