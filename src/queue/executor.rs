@@ -2,7 +2,7 @@ use alloy::{
     primitives::{Address, U256},
     providers::RootProvider,
     rpc::types::TransactionRequest as AlloyTransactionRequest,
-    signers::{k256::ecdsa::SigningKey, LocalWallet},
+    signers::k256::ecdsa::SigningKey,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;

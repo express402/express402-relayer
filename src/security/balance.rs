@@ -95,7 +95,7 @@ where
 
     async fn fetch_balance(&self, address: Address) -> Result<U256> {
         let balance = self.provider
-            .get_balance(address, BlockId::latest())
+            .get_balance(address)
             .await
             .map_err(|e| RelayerError::Ethereum(e.to_string()))?;
 

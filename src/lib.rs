@@ -8,9 +8,9 @@ pub mod api;
 // pub mod utils;
 // pub mod amms;
 // pub mod state_space;
-// pub mod security;
+pub mod security;
 pub mod wallet;
-// pub mod queue;
+// pub mod queue;  // Has complex dependencies, needs coordination
 // pub mod cache;  // Has dependencies on other modules, needs coordination
 // pub mod database;  // Disabled until we set up offline sqlx or use runtime queries
 // pub mod services;
