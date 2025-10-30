@@ -1,15 +1,15 @@
 use thiserror::Error;
 
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Debug)]
 pub enum RelayerError {
     #[error("Configuration error: {0}")]
     Config(String),
     
     #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(String),
     
     #[error("Redis error: {0}")]
-    Redis(#[from] redis::RedisError),
+    Redis(String),
     
     #[error("Ethereum error: {0}")]
     Ethereum(String),
@@ -36,10 +36,10 @@ pub enum RelayerError {
     Api(String),
     
     #[error("Serialization error: {0}")]
-    Serialization(#[from] serde_json::Error),
+    Serialization(String),
     
     #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(String),
     
     #[error("Internal error: {0}")]
     Internal(String),
@@ -63,6 +63,30 @@ impl From<String> for RelayerError {
 impl From<config::ConfigError> for RelayerError {
     fn from(e: config::ConfigError) -> Self {
         RelayerError::Config(e.to_string())
+    }
+}
+
+impl From<sqlx::Error> for RelayerError {
+    fn from(e: sqlx::Error) -> Self {
+        RelayerError::Database(e.to_string())
+    }
+}
+
+impl From<redis::RedisError> for RelayerError {
+    fn from(e: redis::RedisError) -> Self {
+        RelayerError::Redis(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for RelayerError {
+    fn from(e: serde_json::Error) -> Self {
+        RelayerError::Serialization(e.to_string())
+    }
+}
+
+impl From<std::io::Error> for RelayerError {
+    fn from(e: std::io::Error) -> Self {
+        RelayerError::Io(e.to_string())
     }
 }
 

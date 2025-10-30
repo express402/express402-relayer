@@ -2,7 +2,7 @@ use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::types::Result;
+use crate::types::{Result, RelayerError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {

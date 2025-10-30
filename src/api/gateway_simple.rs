@@ -27,11 +27,10 @@ pub struct StatsResponse {
     pub message: String,
 }
 
-pub fn create_router() -> Router<ApiState> {
+pub fn create_router() -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/stats", get(get_stats))
-        .with_state(ApiState {})
 }
 
 async fn health_check() -> impl IntoResponse {

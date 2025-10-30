@@ -95,12 +95,15 @@ impl TransactionRequest {
             gas_price: None,
             max_fee_per_gas: Some(self.max_fee_per_gas.try_into().unwrap_or(u128::MAX)),
             max_priority_fee_per_gas: Some(self.max_priority_fee_per_gas.try_into().unwrap_or(u128::MAX)),
-            input: Some(self.calldata.clone()),
+            input: self.calldata.clone().into(),
             nonce: Some(self.nonce.try_into().unwrap_or(u64::MAX)),
             chain_id: None,
             access_list: None,
             blob_versioned_hashes: None,
             max_fee_per_blob_gas: None,
+            authorization_list: None,
+            sidecar: None,
+            transaction_type: None,
         }
     }
 }

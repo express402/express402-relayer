@@ -1,16 +1,16 @@
 use express402_relayer::{
     api::gateway_simple,
     config::Config,
-    services::ServiceManager,
     types::RelayerError,
 };
 use axum::{
     middleware,
-    Router,
+    response::Response,
+    http::Request,
 };
-use std::sync::Arc;
+use tower::ServiceExt;
 use tokio::net::TcpListener;
-use tracing::{info, error};
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), RelayerError> {
@@ -21,18 +21,9 @@ async fn main() -> Result<(), RelayerError> {
 
     info!("Starting Express402 Relayer Service");
 
-    // Load configuration
-    let config = Config::from_env()
-        .map_err(|e| RelayerError::Config(e.to_string()))?;
-
-    // Validate configuration
-    config.validate_or_error()
-        .map_err(|e| {
-            error!("Configuration validation failed: {}", e);
-            e
-        })?;
-
-    info!("Configuration loaded and validated successfully");
+    // Load configuration with defaults
+    let config = Config::default();
+    info!("Using default configuration");
 
     // For now, use simplified router without services
     let app = gateway_simple::create_router();
@@ -53,7 +44,10 @@ async fn main() -> Result<(), RelayerError> {
     };
 
     // Start the server with graceful shutdown
-    axum::serve(listener, app)
+    let std_listener = listener.into_std().map_err(|e| RelayerError::Internal(e.to_string()))?;
+    axum::Server::from_tcp(std_listener)
+        .map_err(|e| RelayerError::Internal(e.to_string()))?
+        .serve(app.into_make_service())
         .with_graceful_shutdown(shutdown_signal)
         .await
         .map_err(|e| RelayerError::Internal(e.to_string()))?;
@@ -67,9 +61,9 @@ async fn main() -> Result<(), RelayerError> {
 
 // Middleware functions (simplified versions)
 async fn cors_middleware(
-    request: axum::extract::Request,
-    next: middleware::Next,
-) -> axum::response::Response {
+    request: Request<axum::body::Body>,
+    next: middleware::Next<axum::body::Body>,
+) -> Response {
     let response = next.run(request).await;
     let mut response = response;
     let headers = response.headers_mut();
@@ -82,9 +76,9 @@ async fn cors_middleware(
 }
 
 async fn logging_middleware(
-    request: axum::extract::Request,
-    next: middleware::Next,
-) -> axum::response::Response {
+    request: Request<axum::body::Body>,
+    next: middleware::Next<axum::body::Body>,
+) -> Response {
     let start = std::time::Instant::now();
     let method = request.method().clone();
     let uri = request.uri().clone();
@@ -104,9 +98,9 @@ async fn logging_middleware(
 }
 
 async fn request_id_middleware(
-    mut request: axum::extract::Request,
-    next: middleware::Next,
-) -> axum::response::Response {
+    mut request: Request<axum::body::Body>,
+    next: middleware::Next<axum::body::Body>,
+) -> Response {
     let request_id = uuid::Uuid::new_v4().to_string();
     request.headers_mut().insert(
         "x-request-id",
@@ -117,9 +111,9 @@ async fn request_id_middleware(
 }
 
 async fn security_headers_middleware(
-    request: axum::extract::Request,
-    next: middleware::Next,
-) -> axum::response::Response {
+    request: Request<axum::body::Body>,
+    next: middleware::Next<axum::body::Body>,
+) -> Response {
     let response = next.run(request).await;
     let mut response = response;
     let headers = response.headers_mut();
